@@ -190,6 +190,51 @@ class WSClient {
 
 ---
 
+## HTTP/1.1 — Assets & Pièces Jointes
+
+Décision : **HTTP/1.1 classique (pas de HTTP/2) pour tout ce qui est "bulk"/statique**
+(chargement initial JS/CSS/HTML embarqué via `rust-embed`, futures pièces jointes/images),
+**WebSocket réservé au plan de contrôle temps réel** (texte, présence, signaling, sync).
+
+Raisons :
+- WebSocket est un flux unique ordonné — y faire passer un gros payload (image, fichier)
+  bloque la livraison des messages de contrôle suivants tant qu'il n'est pas passé
+  (head-of-line blocking applicatif). HTTP/1.1 keep-alive n'a pas ce problème : le
+  navigateur ouvre plusieurs connexions en parallèle (~6/origine), chacune indépendante.
+- HTTP/1.1 donne gratuitement : cache navigateur natif (`Cache-Control`/`ETag`), `Range`
+  requests pour chargement progressif, `<img src="...">` simple sans JS custom (blob/hook).
+- HTTP/2 rejeté : la quasi-totalité de l'écosystème mature (`h2`, donc `hyper`) est câblé
+  sur les traits `tokio::io::AsyncRead/Write`, incompatible avec le modèle *completion*
+  io_uring de monoio sans un shim tokio (`monoio-compat`, fragile) — irait à l'encontre du
+  choix "zéro Tokio". Le gain de HTTP/2 (multiplexing) ne sert de toute façon à rien vu le
+  faible nombre d'assets (build Vite = 2-4 fichiers) et le peu de trafic HTTP attendu.
+- Auth sur les requêtes HTTP d'assets/pièces jointes (un `<img src>` ne porte pas de header
+  custom) : cookie de session `HttpOnly` envoyé automatiquement par le navigateur — même
+  mécanisme que le token de session opaque déjà utilisé pour le WS, pas de système d'auth
+  séparé à maintenir.
+
+**Scope volontairement réduit du serveur HTTP maison** (pas un serveur généraliste) :
+GET uniquement, keep-alive, `Content-Length` correct — pas de compression négociée, pas
+de multipart, pas de `Range` au départ. Boucle de service basée sur `httparse` (parseur
+bas niveau déjà utilisé par `hyper`, donc pas un "parsing HTTP écrit à la main" au sens
+naïf) :
+
+```
+accept() → boucle {
+    lire jusqu'à requête complète (httparse)
+    traiter + écrire réponse (Content-Length correct)
+    si Connection: close ou timeout → fermer
+    sinon → ré-armer une lecture sur la même fd (garder la connexion ouverte)
+}
+```
+
+Point d'attention monoio spécifique : contrairement à un `read()` en boucle epoll,
+monoio utilise un modèle *completion* à buffers possédés — une requête HTTP fragmentée
+sur plusieurs complétions io_uring demande une accumulation de buffer explicite avant de
+la passer à `httparse` (pas un simple "read jusqu'à EOF").
+
+---
+
 ## WebRTC — Audio & Vidéo
 
 ### Signaling via WebSocket
@@ -377,12 +422,55 @@ CPU : quasi zéro. GPU : ~8-10%.
 
 ---
 
+## Scalabilité — Ordres de Grandeur (Single-Cœur)
+
+Estimation à la louche de ce qu'encaisse l'archi single-thread/single-cœur, par régime
+(le goulot d'étranglement change selon le type de trafic) :
+
+- **Chat texte (WebSocket, pas de RTC)** : quasi gratuit en CPU (sockets majoritairement
+  idle, petits messages Protobuf). Plusieurs milliers de connexions simultanées sans
+  effort — jamais le facteur limitant pour un groupe d'amis.
+- **Voix seule (Opus, SFU, pas de transcodage)** : coût CPU dominant = chiffrement SRTP
+  par paquet, bon marché avec AES-NI. De l'ordre de **50-100 participants voix
+  simultanés** avant que le CPU commence à peser — très au-delà du scope v1.
+- **Vidéo H264 1080p60 simulcast** : le CPU (forward SRTP pur, pas de transcodage) tient
+  probablement jusqu'à plusieurs centaines de Mbps voire quelques Gbps par cœur. **Le
+  réseau sature avant le CPU** : à 10 participants vidéo simultanés (cf. section Bande
+  Passante ci-dessous, ~720Mbps), on est déjà proche du plafond d'un lien 1Gbps typique
+  de VPS. Ordre de grandeur réaliste : **~10-15 participants vidéo max** sur ce type
+  d'hébergement, plafonné par la bande passante, pas par le nombre de cœurs.
+
+Cas d'usage asymétrique (ex. 2 streamers + le reste en spectateurs, plutôt qu'un appel
+vidéo à N caméras) : le coût SFU scale en **K streamers × (N-1) spectateurs par stream**,
+pas en N² — avec simulcast (1 spectateur "focus" en haute qualité, le reste en vignette
+basse résolution), on tombe à quelques dizaines de Mbps pour 2 streamers/10 personnes,
+loin du pire cas (~720Mbps) où les 10 caméras sont toutes allumées et tout le monde
+regarde tout le monde.
+
+**Conclusion** : single-cœur est largement suffisant pour le scope "groupe d'amis" —
+confirme la ligne déjà posée dans la Vue d'ensemble ("le bottleneck est toujours la
+bande passante, jamais le CPU"). Multithread/scale-out ne se justifierait que pour du
+multi-tenant SaaS ou des centaines/milliers d'utilisateurs simultanés — hors scope,
+cohérent avec ce que font les solutions self-hosted comparables (Matrix/Synapse,
+Mattermost, Rocket.Chat) pour des déploiements de taille équivalente.
+
+---
+
 ## TLS & ACME
 
 rustls-acme gère automatiquement :
 - Obtention du certificat Let's Encrypt au premier démarrage
 - Renouvellement automatique avant expiration
 - Zéro configuration manuelle
+
+> **Risque non validé à spiker avant d'investir dans le serveur HTTP complet** :
+> `rustls-acme` est conçu et testé principalement avec Tokio ; son intégration avec
+> monoio (modèle *completion* io_uring) n'est pas éprouvée. Avant d'écrire le parsing
+> HTTP/1.1 + la boucle keep-alive, faire un spike isolé : `monoio-rustls` +
+> `rustls-acme` qui obtient un certificat Let's Encrypt et sert "hello world" en TLS.
+> Si ça passe sans friction majeure, le reste (HTTP/1.1 maison, upgrade WS) est un
+> travail borné et prévisible. Si le spike révèle des frictions sérieuses, c'est le
+> signal pour reconsidérer le pari monoio dans son ensemble plutôt que de s'entêter.
 
 ```rust
 let mut tls_incoming = AcmeConfig::new(["chat.example.com"])

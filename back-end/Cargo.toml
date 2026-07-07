@@ -5,12 +5,14 @@ edition = "2024"
 
 [dependencies]
 bincode = "1"
+futures = "0.3"
 httparse = "1.10.1"
 monoio = { version = "0.2.4", features = ["iouring"] }
 monoio-rustls = "0.4.0"
 oxidart = { version = "0.5.0", path = "../../radixox/oxidart" }
 prost = "0.14.4"
 rust-embed = "8.11.0"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-acme = "0.15.3"
 serde = { version = "1.0.228", features = ["derive"] }
 str0m = "0.21.0"

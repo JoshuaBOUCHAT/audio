@@ -268,6 +268,7 @@ name = "back-end"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "futures",
  "httparse",
  "monoio",
  "monoio-rustls",
@@ -275,6 +276,7 @@ dependencies = [
  "prost",
  "prost-build",
  "rust-embed",
+ "rustls",
  "rustls-acme",
  "serde",
  "str0m",
