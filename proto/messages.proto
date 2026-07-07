@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package chat;
+
+// Source de vérité du protocole. Dérivé des user stories dans
+// ./user-stories.md — chaque message ci-dessous couvre une story v1 précise.
+// Les sections "réservé post-v1" indiquent une intention d'architecture, pas
+// un engagement de forme finale : à revalider avant implémentation.
+
+// ═══════════════════════════════════
+// TYPES COMMUNS
+// ═══════════════════════════════════
+
+message User {
+  uint64 id = 1;
+  string email = 2;
+  bool is_admin = 3;
+}
+
+message Channel {
+  uint64 id = 1;
+  string name = 2;
+
+  enum Type {
+    TEXT = 0;
+    VOICE = 1; // réservé post-v1 (stories 18-22) — jamais émis en v1
+  }
+  Type type = 3;
+}
+
+message Message {
+  uint64 id = 1;
+  uint64 channel_id = 2;
+  uint64 user_id = 3;
+  string content = 4;
+  uint64 timestamp = 5;
+  // Tombstone (story 13-15). Si true, "content" est vide et doit être ignoré
+  // côté client — seule la suppression elle-même doit être reflétée.
+  bool deleted = 6;
+}
+
+// ═══════════════════════════════════
+// CLIENT → SERVEUR
+// ═══════════════════════════════════
+
+message ClientEnvelope {
+  string request_id = 1; // corrélation requête/réponse (uuid)
+  oneof payload {
+    RequestMagicLink request_magic_link = 2; // story 1
+    AuthRequest       auth               = 3; // story 2
+    SendMessage       send_message       = 4; // story 10
+    DeleteMessage     delete_message     = 5; // story 13-14
+    SyncRequest       sync               = 6; // story 12
+    CreateChannel     create_channel     = 7; // story 7
+
+    // --- réservé post-v1, structure indicative seulement ---
+    // JoinVoice    join_voice    = 20; // story 18
+    // LeaveVoice   leave_voice   = 21; // story 21
+    // WebRtcOffer  webrtc_offer  = 22; // story 18
+    // IceCandidate ice_candidate = 23; // story 18
+  }
+}
+
+message RequestMagicLink {
+  string email = 1;
+}
+
+message AuthRequest {
+  string token = 1; // token du lien magique, consommé une seule fois
+}
+
+message SendMessage {
+  uint64 channel_id = 1;
+  string content = 2;
+}
+
+message DeleteMessage {
+  uint64 channel_id = 1;
+  uint64 message_id = 2;
+  // Autorisation vérifiée côté serveur : auteur du message OU admin.
+}
+
+message SyncRequest {
+  uint64 channel_id = 1;
+  uint64 last_seen_id = 2;
+}
+
+message CreateChannel {
+  string name = 1;
+  // Autorisation vérifiée côté serveur : admin uniquement.
+}
+
+// ═══════════════════════════════════
+// SERVEUR → CLIENT
+// ═══════════════════════════════════
+
+message ServerEnvelope {
+  string request_id = 1; // vide pour les événements non sollicités (broadcast)
+  oneof payload {
+    MagicLinkSent   magic_link_sent   = 2;
+    AuthResponse    auth_response     = 3;
+    NewMessage      new_message       = 4;
+    MessageDeleted  message_deleted   = 5;
+    SyncResponse    sync_response     = 6;
+    ChannelCreated  channel_created   = 7;
+    Error           error             = 8;
+  }
+}
+
+// Ack volontairement vide : ne révèle pas si l'email correspond à un compte
+// existant (évite l'énumération de comptes).
+message MagicLinkSent {}
+
+message AuthResponse {
+  User me = 1;
+  repeated Channel channels = 2; // tous les salons (story 8)
+}
+
+// Broadcast à tous les clients connectés, indépendamment du salon affiché
+// côté client (voir décision de conception dans user-stories.md).
+message NewMessage {
+  Message message = 1;
+}
+
+message MessageDeleted {
+  uint64 channel_id = 1;
+  uint64 message_id = 2;
+}
+
+message SyncResponse {
+  uint64 channel_id = 1;
+  repeated Message messages = 2; // inclut les messages deleted=true
+}
+
+message ChannelCreated {
+  Channel channel = 1; // broadcast
+}
+
+message Error {
+  uint32 code = 1;
+  string message = 2;
+}
