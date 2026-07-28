@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aws-lc-rs = "1"
+base64 = "0.22"
 bincode = "1"
 futures = "0.3"
 httparse = "1.10.1"
-monoio = { version = "0.2.4", features = ["iouring"] }
+monoio = { version = "0.2.4", features = ["iouring", "sync"] }
 monoio-rustls = "0.4.0"
 oxidart = { version = "0.5.0", path = "../../radixox/oxidart" }
 prost = "0.14.4"

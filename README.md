@@ -25,11 +25,13 @@ user stories dans `proto/user-stories.md`.
 
 ## Prochaine étape
 
-**Spike à faire avant d'investir dans le serveur HTTP/1.1 maison** : valider que
-`monoio-rustls` + `rustls-acme` obtiennent un certificat Let's Encrypt et servent du TLS
-correctement sous monoio (cet écosystème TLS/ACME est surtout testé avec Tokio, pas
-encore éprouvé avec le modèle *completion* de monoio). Voir la section "TLS & ACME" dans
-`architecture.md` pour le détail du risque et le plan si le spike échoue.
+**Spike TLS/ACME validé** (`back-end/examples/acme_spike.rs`, testé en conditions
+réelles sur VPS avec Let's Encrypt staging) : `monoio-rustls` + `rustls-acme`
+fonctionnent sous monoio, deux ajustements requis (feature `sync` de monoio,
+`alpn_protocols` explicite) — détails dans la section "TLS & ACME" de
+`architecture.md`. Prochaine étape : serveur HTTP/1.1 maison (parsing `httparse` +
+boucle keep-alive) et upgrade WebSocket, cf. section "HTTP/1.1 — Assets & Pièces
+Jointes" de `architecture.md`.
 
 ## Commandes
 

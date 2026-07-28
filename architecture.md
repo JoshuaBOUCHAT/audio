@@ -71,6 +71,61 @@ npx pbjs -t json proto/messages.proto > proto/messages.json
 npx pbts proto/messages.json > proto/messages.d.ts
 ```
 
+### Validation — pattern parse-don't-validate
+
+Règle générale pour **tous** les messages `ClientEnvelope`, pas seulement WebRTC : le
+type prost brut (généré depuis `.proto`) ne doit jamais être passé aux fonctions
+métier. Il transite par une étape de validation qui produit un **nouveau type** portant
+la garantie de correction dans son existence même — le reste de la boucle applicative
+(résolution OxidArt, log, broadcast) ne manipule plus que ce type validé, jamais le brut.
+
+```
+RawX (prost, non-fiable)  --validate()-->  Result<ValidX, ValidationError>
+```
+
+- `ValidX` : struct dédiée par message (`ValidSendMessage`, `ValidWebRtcOffer`, ...),
+  construite uniquement via une fonction de validation qui échoue si un invariant
+  structurel n'est pas respecté. Une fois construite, aucun code en aval ne revérifie
+  ces invariants — leur non-violation est une propriété du type, pas une convention.
+- **Signature d'erreur unique** pour toutes les validations : réutilise le message
+  `Error{code, message}` déjà défini dans `messages.proto` (pas de type d'erreur par
+  message). Un `ValidX` raté se transforme directement en `ServerEnvelope::error`,
+  point de sortie unique quel que soit le message d'origine.
+- **Scope volontairement limité à la première passe** : format/bornes/cohérence interne
+  (ex. `sdp` non vide, `content` dans une taille raisonnable, `channel_id != 0`). Les
+  vérifications *stateful* (le salon existe-t-il ? l'auteur a-t-il le droit ?) restent
+  dans le handler métier, qui seul a accès à l'état OxidArt — ne pas les remonter dans
+  la validation structurelle, ça la coupler inutilement à l'état.
+- **Critère pour trancher structurel vs métier** : une absence/valeur vide qui ne doit
+  *jamais* arriver (violation de contrat protocole, ex. `sdp` vide) va dans
+  `validate()` → `Error`. Une absence/valeur vide qui fait partie du flow normal et que
+  le métier doit traiter *spécifiquement* (pas juste rejeter) reste hors de
+  `validate()` — elle traverse jusqu'au handler, qui décide quoi en faire. Le
+  validateur ne doit rejeter que ce qui n'a *aucune* interprétation métier valide.
+
+Cette étape se branche naturellement sur la frontière WS→proto (cf. Transport
+WebSocket ci-dessous) : `bytes WS --decode proto--> RawX --validate--> ValidX`, trois
+étapes, trois erreurs possibles (frame malformée / proto non-décodable / invariant
+violé), une seule sortie uniforme (`Error`) dans les trois cas.
+
+**Le même principe descend au niveau des champs scalaires, pas seulement des
+messages composites.** Dès qu'un champ a un invariant qui vaut la peine d'être
+vérifié une fois puis garanti par le type (ex. `Email`, cf. `back-end/src/email.rs`),
+il devient un newtype (`pub struct Email(String)`, construit uniquement via
+`Email::parse`, jamais `pub`) — pas seulement dans `ValidX`, mais dans **tout** le
+crate : `email: String` ou `email: &str` ne doit apparaître nulle part en dehors du
+point de construction du newtype lui-même. Une variable/un champ qui porte une valeur
+pas encore validée s'appelle `unchecked_<nom>_str` (ex. `unchecked_email_str`), jamais
+le nom du champ métier — le nom de la variable doit rendre visible, sans avoir à lire
+le type, qu'elle n'a pas encore traversé `parse()`.
+
+Pas de transtypage `&mut String -> &mut Email` (via `unsafe`/`transmute`) même quand
+la validation ne fait que vérifier sans transformer : le coût d'une allocation
+supplémentaire sur un chemin non chaud (auth, création de salon...) ne justifie pas
+d'introduire de l'unsafe dans un projet dont la philosophie est "single-thread, code
+très soigné" — la garantie de correction doit rester portée par le compilateur, pas
+par une relecture attentive d'un bloc `unsafe`.
+
 ### Modèle de données — clés OxidArt
 
 Pas de schéma relationnel : chaque type d'entité est une clé préfixée. Les scans de
@@ -392,6 +447,62 @@ Les messages texte passent par OxidArt puis le log.
 
 ---
 
+## Write Path — Buffer + Flag In-Flight (broadcast sans spawn par message)
+
+Décision : chaque connexion possède une **queue de sortie** + un **flag "write en
+cours"**. Diffuser un message à N connexions (ex. `NewMessage` broadcasté à tout le
+monde) ne déclenche jamais N écritures immédiates — ça pousse dans N buffers, et laisse
+la task d'écriture déjà active pour chaque connexion (s'il y en a une) faire le travail.
+Architecture *proactive* : on ne "send" pas à chaque message, on empile puis on laisse le
+writer déjà en vol drainer.
+
+```rust
+struct Client {
+    ws_writer:       RefCell<WsWriter>,
+    write_queue:     RefCell<VecDeque<Bytes>>,
+    write_in_flight: Cell<bool>,
+    // ...
+}
+
+fn enqueue_write(client: &Rc<Client>, frame: Bytes) {
+    client.write_queue.borrow_mut().push_back(frame);
+    if !client.write_in_flight.get() {
+        client.write_in_flight.set(true);
+        monoio::spawn(drain_writes(client.clone()));
+    }
+    // sinon : rien à faire, la task déjà en vol videra ce message
+}
+
+async fn drain_writes(client: Rc<Client>) {
+    loop {
+        let frame = match client.write_queue.borrow_mut().pop_front() {
+            Some(f) => f,
+            None => { client.write_in_flight.set(false); return; }
+        };
+        client.ws_writer.borrow_mut().write_frame(frame).await;
+    }
+}
+```
+
+Propriétés :
+- **Un seul writer actif par connexion** à la fois → pas d'entrelacement de frames sur le
+  même socket (deux `write_frame().await` concurrents corromptraient le flux WS côté
+  client).
+- **Une task d'écriture par rafale, pas par message** → amorti le coût de spawn quand
+  plusieurs messages arrivent d'un coup pour la même connexion (broadcast, rattrapage de
+  sync).
+- **Ordre FIFO préservé** par connexion.
+- **Pas de race sur le flag**, précisément grâce au single-thread : entre le
+  `pop_front()` qui rend `None` et le `set(false)`, il n'y a aucun `.await` — donc aucun
+  point de yield où une autre task pourrait s'intercaler et pousser un message qui serait
+  perdu. Si `enqueue_write` est appelé après le `set(false)`, il retrouve le flag à
+  `false` et respawn une task normalement — aucun message n'est jamais silencieusement
+  ignoré. C'est un exemple concret de la philosophie "single-thread comme feature" plutôt
+  que comme limitation : ce pattern serait nettement plus délicat (nécessiterait un
+  vrai lock ou un canal MPSC) sur un runtime multi-thread.
+
+---
+
 ## Bande Passante — 10 Personnes
 
 ### Audio seul
@@ -463,14 +574,28 @@ rustls-acme gère automatiquement :
 - Renouvellement automatique avant expiration
 - Zéro configuration manuelle
 
-> **Risque non validé à spiker avant d'investir dans le serveur HTTP complet** :
-> `rustls-acme` est conçu et testé principalement avec Tokio ; son intégration avec
-> monoio (modèle *completion* io_uring) n'est pas éprouvée. Avant d'écrire le parsing
-> HTTP/1.1 + la boucle keep-alive, faire un spike isolé : `monoio-rustls` +
-> `rustls-acme` qui obtient un certificat Let's Encrypt et sert "hello world" en TLS.
-> Si ça passe sans friction majeure, le reste (HTTP/1.1 maison, upgrade WS) est un
-> travail borné et prévisible. Si le spike révèle des frictions sérieuses, c'est le
-> signal pour reconsidérer le pari monoio dans son ensemble plutôt que de s'entêter.
+> **Risque validé par spike** (`back-end/examples/acme_spike.rs`, testé en conditions
+> réelles sur VPS avec `spike.joshua-bouchat.fr` + Let's Encrypt staging) :
+> `monoio-rustls` + `rustls-acme` fonctionnent ensemble sous monoio, sans fork ni shim
+> tokio. Deux ajustements nécessaires par rapport à l'API "haut niveau" (pensée
+> tokio/smol), à retenir pour l'implémentation définitive :
+> 1. **Feature `sync` de monoio obligatoire** (`features = ["iouring", "sync"]`).
+>    `rustls-acme` fait ses appels réseau vers l'ACME directory sur un thread OS séparé
+>    (crate `blocking`), et réveille la tâche monoio depuis ce thread — un `Waker` envoyé
+>    entre threads panique sans cette feature (monoio est non-`Send` par défaut pour
+>    éviter le coût des atomics en single-thread pur).
+> 2. **API bas niveau de rustls-acme, pas la haute niveau** : `state.resolver()` donne un
+>    `Arc<ResolvesServerCertAcme>` (implémente `rustls::server::ResolvesServerCert`) qui
+>    gère déjà en interne la bascule challenge/cert réel selon l'ALPN — pas besoin de
+>    réimplémenter l'équivalent de `LazyConfigAcceptor` (variantes tokio/futures
+>    uniquement). Un seul `ServerConfig` avec ce resolver + **`alpn_protocols` explicitement
+>    mis à `["acme-tls/1", "http/1.1"]`** (sinon Let's Encrypt rejette le challenge avec
+>    `Cannot negotiate ALPN protocol "acme-tls/1"`, même si le bon certificat est présenté —
+>    la négociation ALPN et la résolution de certificat sont deux mécanismes distincts).
+>
+> Conclusion : le pari monoio est confirmé viable pour la partie TLS/ACME. Le reste
+> (HTTP/1.1 maison, upgrade WS) reste un travail borné et prévisible, cf. section
+> "HTTP/1.1 — Assets & Pièces Jointes" plus haut.
 
 ```rust
 let mut tls_incoming = AcmeConfig::new(["chat.example.com"])

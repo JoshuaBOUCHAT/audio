@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Généré depuis ../proto/messages.proto par `npm run proto:gen` — pas la source
+# de vérité, ne jamais éditer à la main.
+src/proto/messages.js
+src/proto/messages.d.ts
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

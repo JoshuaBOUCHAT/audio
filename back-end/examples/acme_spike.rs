@@ -36,14 +36,17 @@ async fn main() {
 
     let resolver = state.resolver();
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = Arc::new(
-        ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .expect("protocol versions")
-            .with_no_client_auth()
-            .with_cert_resolver(resolver),
-    );
-    let acceptor = monoio_rustls::TlsAcceptor::from(config);
+    let mut config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_cert_resolver(resolver);
+    // TLS-ALPN-01 exige que le serveur négocie explicitement "acme-tls/1" pendant le
+    // challenge — sans ça Let's Encrypt rejette même si le bon cert est présenté.
+    // "http/1.1" reste nécessaire pour que les connexions normales (navigateur) négocient
+    // toujours quelque chose une fois qu'on annonce une liste ALPN non vide.
+    config.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = monoio_rustls::TlsAcceptor::from(Arc::new(config));
 
     // rustls-acme ne spawn rien tout seul ("no persistent tasks spawned under the hood") —
     // c'est nous qui devons driver l'état ACME en pollant ce stream, cohérent avec le

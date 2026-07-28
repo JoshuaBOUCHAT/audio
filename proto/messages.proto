@@ -19,13 +19,18 @@ message User {
 
 message Channel {
   uint64 id = 1;
-  string name = 2;
+  string name = 2; // vide pour un DM (type == DM) — le client dérive l'affichage de participant_ids
 
   enum Type {
     TEXT = 0;
     VOICE = 1; // réservé post-v1 (stories 18-22) — jamais émis en v1
+    DM = 2;    // conversation privée 1-à-1 (stories 28-32)
   }
   Type type = 3;
+
+  // Peuplé uniquement pour type == DM (exactement 2 users). Vide pour TEXT/VOICE —
+  // ces salons restent visibles par tout le monde (story 8), pas de liste de membres.
+  repeated uint64 participant_ids = 4;
 }
 
 message Message {
@@ -53,10 +58,11 @@ message ClientEnvelope {
     SyncRequest       sync               = 6; // story 12
     CreateChannel     create_channel     = 7; // story 7
 
+    WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
+
     // --- réservé post-v1, structure indicative seulement ---
     // JoinVoice    join_voice    = 20; // story 18
     // LeaveVoice   leave_voice   = 21; // story 21
-    // WebRtcOffer  webrtc_offer  = 22; // story 18
     // IceCandidate ice_candidate = 23; // story 18
   }
 }
@@ -88,6 +94,13 @@ message SyncRequest {
 message CreateChannel {
   string name = 1;
   // Autorisation vérifiée côté serveur : admin uniquement.
+}
+
+// Spike de validation WebRTC (story 18) : échange SDP non-trickle (candidats hôte
+// inclus directement dans le SDP, cf. user-stories.md § Signaling) — suffisant pour
+// valider str0m+monoio+UDP en local. Le vrai flow (trickle ICE obligatoire) est post-v1.
+message WebRtcOffer {
+  string sdp = 1;
 }
 
 // ═══════════════════════════════════
