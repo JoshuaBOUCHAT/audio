@@ -32,8 +32,9 @@ audio/
 `back-end/`, `front/` et une future app Tauri consomment tous `proto/`. Ne jamais
 définir de types de message ailleurs que dans `proto/messages.proto`.
 
-État actuel : squelette Cargo vide (`back-end/src/main.rs` = hello world). Rien n'est
-encore implémenté — ce fichier documente les décisions déjà prises, pas du code existant.
+État actuel (2026-10-11) : le serveur texte v1 est implémenté (auth, salons, messages,
+broadcast, persistance) ; le front n'a qu'une page de debug (`/debug`). Point de
+reprise détaillé : `HANDOFF.md` ; points repoussés : `TODO.md`.
 
 ## Commandes
 
@@ -45,7 +46,12 @@ cargo test
 cargo clippy
 ```
 
-Pas encore de build front (dossier vide) ni de génération protobuf (proto/ vide).
+```bash
+cd front
+npm run proto:gen   # régénère src/proto/messages.{js,d.ts} (non versionnés) après toute modif du .proto
+npm run dev         # http://localhost:5173/debug
+npx tsc -b && npm run lint
+```
 
 ## Dépendance OxidArt
 

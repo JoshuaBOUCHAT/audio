@@ -1,87 +1,75 @@
-# Handoff — auth flow (AuthRequest → AuthResponse)
+# Handoff — point de reprise
 
-Note de reprise. Contexte : voir `CLAUDE.md` (racine et `back-end/`) et
-`architecture.md`. Ce fichier est du travail en cours, pas de la doc durable — à
-supprimer une fois le flow d'auth mergé.
+Note de travail, pas de la doc durable : décrit où en est le projet et quoi faire
+ensuite. Décisions durables → `CLAUDE.md` / `architecture.md` / `proto/user-stories.md`.
+Points repoussés → `TODO.md`.
 
-## État actuel (fait, testé end-to-end)
+## État au 2026-10-11 — serveur texte v1 complet
 
-- `proto/user-stories.md` : story 33 ajoutée (numérotée à la suite, cf. convention
-  story 28) — reprise de session via `session_token`, auth valable pour toute la
-  durée de vie de la connexion WebSocket.
-- `proto/messages.proto` : `AuthResponse.session_token` ajouté ; `AuthRequest.token`
-  documenté comme acceptant indifféremment un token de lien magique ou de session.
-- `back-end/src/email.rs` : `Email` migré de `String` vers
-  `radixox_lib::shared_byte::SharedByte` — zéro conversion à la frontière OxidArt,
-  `Deref<Target=str>` via `unsafe { from_utf8_unchecked }` (invariant UTF-8 garanti
-  une fois pour toutes dans `Email::parse`, jamais revérifié ailleurs).
-- `back-end/Cargo.toml` : dépendance path `radixox-lib` ajoutée (à côté d'`oxidart`).
-- `back-end/build.rs` : `prost_build::Config` avec `type_attribute` serde sur
-  `User`/`Channel`/`Message` (persistance bincode dans OxidArt, cf.
-  architecture.md § modèle de données).
-- `back-end/src/validate.rs` : `validate_auth_request` (Uuid brut, pas de newtype —
-  décidé : un token n'a pas d'invariant métier au-delà du format UUID).
-- `back-end/src/main.rs` :
-  - `AppState { art: SharedArt, bootstrap_admin_email: Option<Email> }`, construit
-    une fois dans `main()` (email admin lu en argument CLI ou `ADMIN_EMAIL`), cloné
-    dans chaque `monoio::spawn`.
-  - `RequestMagicLink` persiste réellement : `magic_link:{token}` → email, TTL 15
-    minutes (`MAGIC_LINK_TTL`).
-  - `AuthRequest → AuthResponse` implémenté (`handle_auth`) : consomme le lien
-    magique (get+del) sinon retente sur `session:{token}` (jamais consommé) ;
-    résout/crée l'utilisateur (`id_counter` via `incr`, bootstrap admin sur premier
-    login de l'email fourni au démarrage) ; émet un `session_token` (ou renvoie tel
-    quel le token de session si c'était une reprise, pas de rotation).
-  - Auth bind à la connexion WS (pas au message) : `user_id: Option<u64>` vit dans
-    `handle_ws_connection`, pas de champ session à reporter dans les messages
-    suivants sur la même connexion (couvre aussi le futur signaling WebRTC).
-- Validé bout-en-bout (script jetable, supprimé après usage) : lien magique →
-  compte créé → session_token → reconnexion sur un nouveau WS avec le
-  session_token → même `user_id` → réutilisation du lien magique déjà consommé
-  rejetée (`401`).
+Tout est testé de bout en bout (scripts Node jetables avec `ProtocolClient` contre le
+vrai serveur, redémarrage compris).
 
-## Décisions actées cette session
+| Fonction | Où | Notes |
+|---|---|---|
+| Auth lien magique + reprise de session | `main.rs` `handle_auth` | lien loggé sur stdout, TTL 15 min, usage unique ; `session_token` sans expiration ; auth liée à la connexion WS (story 33) |
+| Bootstrap admin | `main.rs` `main` | email en argument CLI ou `ADMIN_EMAIL`, admin à sa première connexion |
+| Salons | `create_channel`, `list_channels` | admin only (403), nom trimé non vide (400), unique parmi les salons texte, casse ignorée (409) ; liste dans `AuthResponse.channels` |
+| Messages | `send_message`, `sync_messages`, `delete_message` | salon texte uniquement (DM refusés : pas encore de livraison ciblée) ; tombstones (`deleted`, contenu vidé) ; suppression par l'auteur ou l'admin (403) |
+| Broadcast | `registry.rs` | modèle proactif repris du `SubRegistry` de radixox ; aux connexions authentifiées sauf l'émetteur, qui reçoit sa réponse avec `request_id` |
+| Persistance | `persist.rs` | reload de `data/dump.rxd` au démarrage ; `SAVE` toutes les 10 s si `dirty` ; `SAVE` sur Ctrl-C/SIGTERM (second signal : sortie sans save) |
+| Clés message | `keys.rs` | `message:{ch}:{id}`, id en hex sur 9 caractères |
+| Front debug | `front/src/debug/AuthDebug.tsx` | `/debug`, zéro CSS, toutes les requêtes + broadcasts reçus |
 
-- TTL lien magique : **15 minutes**.
-- Binding de session : **auth par message après upgrade WS**, identité portée par
-  la connexion (pas un champ token par message) — pas d'auth au niveau du handshake
-  HTTP (aurait sorti l'auth du protobuf, contraire à "le protocole est la source de
-  vérité").
-- `AuthRequest.token` unique pour lien magique et reprise de session (pas de message
-  `ResumeSession` séparé) — le serveur essaie magic_link puis session.
-- Pas de newtype `MagicLinkToken`/`SessionToken` : un UUID brut suffit, aucun
-  invariant métier supplémentaire (contrairement à `Email`).
-- `SharedByte` généralisé à `Email` dès maintenant (pas seulement aux clés/valeurs
-  OxidArt) — fait.
+Codes d'erreur utilisés : 400 (entrée invalide), 401 (non authentifié / token
+invalide), 403 (droit manquant), 404 (salon ou message inconnu), 409 (nom de salon pris).
 
-## Reste à faire
+### Lancer et tester à la main
 
-- ~~Front — seeding debug~~ (fait 2026-10-11) : `front/src/debug/AuthDebug.tsx`,
-  servie sur `/debug` (`npm run dev` → http://localhost:5173/debug). Accepter d'abord
-  le cert auto-signé en ouvrant https://127.0.0.1:8443 dans le navigateur, sinon le
-  WebSocket est refusé.
-- ~~`CreateChannel`/salons~~ (fait 2026-10-11) : admin only (403), nom trimé non
-  vide (400), unique parmi les salons texte sans tenir compte de la casse (409) ;
-  `AuthResponse.channels` rempli (trié par id, DM filtrés par participants).
-- ~~Broadcast~~ (fait 2026-10-11) : `back-end/src/registry.rs`, modèle proactif
-  repris du `SubRegistry` de radixox (flux TLS découpé, pas de tâche d'écriture
-  permanente). Destinataires : connexions authentifiées sauf l'émetteur, qui reçoit
-  sa réponse avec `request_id`. Front : `ProtocolClient.onEvent`.
-- ~~Persistance~~ (fait 2026-10-11) : `back-end/src/persist.rs`, reload de
-  `data/dump.rxd` (`AUDIO_DATA_DIR`) au démarrage + `SAVE` bloquante sur
-  SIGINT/SIGTERM (second signal : sortie sans save). Copie allégée de
-  `resp_cmd/bgsave.rs`/`shutdown.rs` de radixox — à remonter dans oxidart si les deux
-  projets doivent partager ce code.
-- ~~Save périodique~~ (fait 2026-10-11) : `SAVE` bloquante toutes les 10 s si un
-  drapeau `dirty` est levé (oxidart ne compte pas les modifications). Le fsync fige
-  le serveur le temps de l'écriture — à remplacer par la BGSAVE d'oxidart si elle
-  passe un jour du binaire radixox à la lib.
-- ~~SendMessage~~ (fait 2026-10-11) : 401 / 400 (vide) / 404 (salon inconnu) / 400
-  (DM refusés tant que la livraison ciblée n'existe pas) ; `NewMessage` en réponse +
-  broadcast. Clés `message:{ch}:{id}` avec id en base64 trié sur 6 caractères
-  (`keys.rs`).
-- ~~SyncRequest / DeleteMessage~~ (fait 2026-10-11) : resync depuis 0 à la
-  reconnexion (décision story 15), tombstones (`deleted`, contenu vidé), droit
-  auteur ou admin (403), `MessageDeleted` en réponse + broadcast. Sync triée par id :
-  `getn` d'oxidart renvoie l'ordre d'insertion, pas l'ordre des clés.
-- Pas de broadcast/diffusion : hors scope de ce ticket.
+```bash
+cd back-end && cargo run -- ton@email     # https://127.0.0.1:8443, données dans ./data
+# navigateur : ouvrir https://127.0.0.1:8443 une fois pour accepter le cert auto-signé
+cd front && npm run dev                   # http://localhost:5173/debug
+```
+
+Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique pour …`).
+
+## Décisions de la session du 2026-10-11
+
+- Persistance v1 = snapshot oxidart only ; log pur (trace humaine) en fichier
+  append, logique métier dans OxidArt, AOF oxidart reporté (CLAUDE.md § Résilience).
+- audio reste sur monoio même si radixox passe à sa boucle io_uring maison.
+- Save périodique = `SAVE` sync tant qu'oxidart n'expose pas sa BGSAVE en lib
+  (le fsync fige le serveur pendant l'écriture, négligeable à cette échelle).
+- Story 15 : le client resync depuis `last_seen_id = 0` à la reconnexion (la
+  suppression d'un message d'id ≤ `last_seen_id` n'est pas renvoyée autrement).
+- Clés message en hex à longueur fixe, pour un futur `getn` ordonné côté oxidart ;
+  d'ici là, `getn` renvoie l'ordre d'insertion → tri par id côté audio.
+- Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
+- Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
+
+## Prochaine étape — le vrai client front
+
+React + Vite + Tailwind + shadcn (`front/`), en réutilisant `src/lib/protocol.ts`
+(`ProtocolClient`, helpers de requêtes, `onEvent` pour les broadcasts) :
+
+1. Écran de login : email → `RequestMagicLink` → saisie / lien contenant le token →
+   `AuthRequest` ; `session_token` en `localStorage`, renvoyé à l'ouverture.
+2. Liste des salons (`AuthResponse.channels` + `ChannelCreated`), création si admin.
+3. Fil d'un salon : `SyncRequest` depuis 0, `NewMessage` / `MessageDeleted` en direct,
+   envoi, suppression (bouton pour l'auteur et l'admin).
+4. Reconnexion automatique (story 17) : nouveau WS → `AuthRequest` avec le
+   `session_token` → resync depuis 0 de chaque salon ouvert.
+
+URL du back-end codée en dur (`wss://127.0.0.1:8443`) dans la page debug : à rendre
+configurable pour le vrai client.
+
+## Limites connues du serveur (non bloquantes en local)
+
+- Écoute sur `127.0.0.1:8443` avec un cert auto-signé (`back-end/certs/`) : pas
+  encore d'ACME/TLS-ALPN-01 ni de port 443 public (le spike vit dans `spike-acme/`).
+- Requête HTTP d'upgrade lue en un seul `read` (4 Ko) ; frame WebSocket lue en un
+  seul `read` : pas de frame fragmentée ni de frame à cheval sur deux lectures, et
+  une frame non décodable ferme la connexion. Suffisant pour des messages courts,
+  à reprendre pour de gros messages.
+- Ping/pong et frames texte ignorés ; pas de heartbeat (CLAUDE.md : non tranché).
+- Un crash (pas un arrêt propre) perd au plus les 10 dernières secondes.
