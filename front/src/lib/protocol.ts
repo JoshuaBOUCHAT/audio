@@ -7,8 +7,10 @@ import { chat } from "../proto/messages.js";
 export type ClientEnvelopeShape = chat.ClientEnvelope.$Shape;
 export type ServerEnvelope = chat.ServerEnvelope & chat.ServerEnvelope.$Shape;
 
-export function encodeClientEnvelope(payload: ClientEnvelopeShape): Uint8Array {
-  return chat.ClientEnvelope.encode(chat.ClientEnvelope.create(payload)).finish();
+// protobufjs alloue toujours un ArrayBuffer ordinaire (jamais SharedArrayBuffer) ;
+// le cast est ce que WebSocket.send du DOM exige depuis TS 5.7.
+export function encodeClientEnvelope(payload: ClientEnvelopeShape): Uint8Array<ArrayBuffer> {
+  return chat.ClientEnvelope.encode(chat.ClientEnvelope.create(payload)).finish() as Uint8Array<ArrayBuffer>;
 }
 
 export function decodeServerEnvelope(bytes: Uint8Array): ServerEnvelope {
@@ -19,6 +21,10 @@ export function requestMagicLink(email: string): ClientEnvelopeShape {
   return { payload: "requestMagicLink", requestMagicLink: { email } };
 }
 
+export function authRequest(token: string): ClientEnvelopeShape {
+  return { payload: "auth", auth: { token } };
+}
+
 /**
  * Sous-ensemble de l'API WebSocket dont ProtocolClient a besoin — le DOM (navigateur)
  * et le paquet npm `ws` (Node) l'implémentent tous les deux, ce qui permet au même
@@ -26,7 +32,7 @@ export function requestMagicLink(email: string): ClientEnvelopeShape {
  */
 export interface WebSocketLike {
   binaryType: string;
-  send(data: Uint8Array): void;
+  send(data: Uint8Array<ArrayBuffer>): void;
   addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
 }
 

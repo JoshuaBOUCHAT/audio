@@ -56,10 +56,10 @@ supprimer une fois le flow d'auth mergé.
 
 ## Reste à faire
 
-- **Front — seeding debug** (pas encore fait) : page/route debug dans `front/src`
-  (zéro CSS) réutilisant `ProtocolClient` pour taper un email → `RequestMagicLink`
-  → coller le token loggé côté serveur → `AuthRequest` → afficher `AuthResponse`
-  brute. Objectif : tester le flow sans ligne de commande.
+- ~~Front — seeding debug~~ (fait 2026-10-11) : `front/src/debug/AuthDebug.tsx`,
+  servie sur `/debug` (`npm run dev` → http://localhost:5173/debug). Accepter d'abord
+  le cert auto-signé en ouvrant https://127.0.0.1:8443 dans le navigateur, sinon le
+  WebSocket est refusé.
 - `CreateChannel`/salons pas encore implémenté — `AuthResponse.channels` reste
   volontairement vide.
 - Pas de broadcast/diffusion : hors scope de ce ticket.
