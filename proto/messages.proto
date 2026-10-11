@@ -72,7 +72,11 @@ message RequestMagicLink {
 }
 
 message AuthRequest {
-  string token = 1; // token du lien magique, consommé une seule fois
+  // Token du lien magique (consommé une seule fois) OU token de session reçu
+  // dans un AuthResponse précédent (story 33) — le serveur essaie magic_link
+  // d'abord, puis session. Auth valable pour toute la durée de la connexion
+  // WebSocket courante (story 33), pas de champ token à reporter ailleurs.
+  string token = 1;
 }
 
 message SendMessage {
@@ -127,6 +131,10 @@ message MagicLinkSent {}
 message AuthResponse {
   User me = 1;
   repeated Channel channels = 2; // tous les salons (story 8)
+  // À persister côté client (ex. localStorage) et renvoyer dans un futur
+  // AuthRequest.token pour reprendre la session sans repasser par le lien
+  // magique (story 33). Valide indéfiniment (story 6).
+  string session_token = 3;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché

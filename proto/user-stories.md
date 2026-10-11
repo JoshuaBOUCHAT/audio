@@ -23,6 +23,17 @@ Protobuf qu'elle justifie dans `messages.proto`.
 6. En tant qu'utilisateur, je veux que ma session reste valide indéfiniment après
    connexion (pas d'expiration automatique en v1), pour ne pas avoir à me reconnecter
    sans cesse.
+33. (numérotée à la suite, cf. convention story 28 pour ne pas décaler les stories
+    7-32 déjà référencées ailleurs) En tant qu'utilisateur qui rouvre l'app (nouvel
+    onglet, refresh, reconnexion réseau), je veux que le client puisse réutiliser un
+    jeton reçu à la connexion précédente pour me réauthentifier directement, sans
+    devoir recliquer un lien magique à chaque fois — l'auth se fait une fois par
+    connexion WebSocket (`AuthRequest` accepte indifféremment un token de lien
+    magique ou un token de session), et reste valable pour toute la durée de vie de
+    cette connexion (y compris pour le signaling WebRTC post-v1) : aucune requête
+    suivante sur cette même connexion n'a besoin de reporter un token, l'identité est
+    portée par la connexion elle-même côté serveur (état en mémoire, pas dans
+    OxidArt).
 
 ### Salons
 
