@@ -13,7 +13,7 @@ Un serveur de communication self-hosted minimaliste — salons texte, voix, vid�
 - Single-thread, single-process, single-binary
 - Zéro Tokio, zéro nginx, zéro Docker Compose complexe
 - Protocole défini une fois en Protobuf — source de vérité absolue
-- Persistence via OxidArt + append-only log, zéro SQL
+- Persistence via OxidArt + snapshot (`BGSAVE`), zéro SQL
 - Le bottleneck est toujours la bande passante, jamais le CPU
 
 ---
@@ -24,7 +24,7 @@ Un serveur de communication self-hosted minimaliste — salons texte, voix, vid�
 |-----------|-------------|--------|
 | Runtime | monoio (io_uring) | Single-thread, Linux natif, zéro Send/Sync requis |
 | DB in-memory | OxidArt (ART custom) | O(k) sur toutes les ops, runtime-agnostique |
-| Persistence | Append-only log + snapshot incrémental | Zéro SQL, zéro dépendance |
+| Persistence | Snapshot OxidArt (`BGSAVE`), AOF oxidart reporté | Zéro SQL, zéro dépendance |
 | Transport texte | WebSocket (manuel, ~100 lignes) | Natif browser, Tauri, mobile |
 | Transport media | WebRTC via str0m | Sans I/O, runtime-agnostique |
 | Protocole | Protobuf (prost côté Rust, protobufjs côté JS) | Source de vérité unique |
@@ -41,8 +41,8 @@ un seul thread OS (monoio io_uring)
   ├── dispatch messages Protobuf entrants
   ├── OxidArt mutations (sync, atomique entre .await)
   ├── str0m WebRTC state machine (Sans I/O)
-  ├── append-only log writes (io_uring async)
-  ├── snapshot incrémental (100 clés/tick)
+  ├── BGSAVE oxidart (par tranches, entre les requêtes)
+  ├── log pur append-only (trace humaine, jamais relue)
   └── rustls-acme TLS + renouvellement Let's Encrypt
 ```
 
@@ -139,7 +139,7 @@ liste utilisent `getn(prefix)` (traversal ART natif, O(k)).
 | `session:{token}` | `user_id` (u64) | pas de TTL en v1 — révocation = `del` explicite (non implémenté v1) |
 | `channel:{id}` | `Channel` (bincode) | listing via `getn("channel:")` |
 | `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **8 octets big-endian** dans la clé (pas en décimal) pour que l'ordre lexicographique de l'ART corresponde à l'ordre chronologique — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
-| `global_id_counter` | `u64` | un seul compteur partagé user/channel/message (cf. section IDs plus bas) ; persisté avec le snapshot, reclampé sur `max(id vu)+1` au replay du log par sécurité |
+| `global_id_counter` | `u64` | un seul compteur partagé user/channel/message (cf. section IDs plus bas) ; clé OxidArt (`id_counter`, `incr`), persisté par le snapshot comme le reste |
 
 ### Flows
 
@@ -167,7 +167,6 @@ Serveur --AuthResponse{me, channels}--> Client
 ```
 Client --SendMessage{channel_id, content}--> Serveur
 Serveur: id = global_id_counter++ ; insert message:{channel_id}:{id}
-         append LogEntry::SendMessage
 Serveur --NewMessage{message}--> TOUS les clients connectés (broadcast global,
          voir décision de conception dans user-stories.md — pas de JoinChannel)
 ```
@@ -185,7 +184,7 @@ Serveur --SyncResponse{channel_id, messages}--> Client
 ```
 Client --DeleteMessage{channel_id, message_id}--> Serveur
 Serveur: vérifie auteur == sender OU sender.is_admin, sinon Error
-         message.deleted = true ; append LogEntry::DeleteMessage
+         message.deleted = true
 Serveur --MessageDeleted{channel_id, message_id}--> TOUS les clients connectés
 ```
 
@@ -337,7 +336,7 @@ Le serveur str0m forward le layer approprié selon `RTCP REMB` (bandwidth estima
 
 ---
 
-## Persistence — OxidArt + Log
+## Persistence — OxidArt + snapshot
 
 ### Règle fondamentale de cohérence
 
@@ -355,62 +354,31 @@ OxidArt est synchrone — `insert/get/delete` sont des fonctions normales, jamai
 Le runtime monoio est coopératif — aucun autre task ne peut s'intercaler entre deux mutations
 synchrones. La cohérence est garantie par construction.
 
-### Append-Only Log
+### Snapshot (BGSAVE oxidart)
 
-```
-chaque mutation métier → encode en LogEntry (bincode) → append via io_uring
-format : [u32 length][bytes LogEntry]
+La save est implémentée dans oxidart (`oxidart/src/save.rs`, design complet dans
+`~/rust/radixox/SAVE_DESIGN.md`) : snapshot COW applicatif, DFS par tranches entre
+les requêtes, fichier unique avec pied crc32, compression zstd optionnelle, reload en
+masse au démarrage. audio ne fait que la déclencher (`BGSAVE`, et save à l'arrêt) —
+il ne réimplémente rien.
 
-LogEntry {
-    Set { key: Vec<u8>, value: Value, ttl: Option<u64> },
-    Del { key: Vec<u8> },
-    HSet { key, field, value },
-    HDel { key, field },
-    ...
-}
-```
+Crash : on perd ce qui a été écrit depuis la dernière save (assumé v1). Le fichier est
+remplacé atomiquement (rename seulement si la save est complète).
 
-### Snapshot Incrémental
+### Log vs OxidArt
 
-Toutes les N ms (entre les requêtes), scan 100 clés de l'ART et les écrit dans le snapshot :
-
-```
-tick 1 : scan clés [0..100]   → append dans snapshot_wip.bin
-tick 2 : scan clés [100..200] → append
-...
-tick N : scan terminé
-         dirty keys (modifiées pendant le scan) → append
-         rename atomic snapshot_wip.bin → snapshot.bin
-         tronque le log (snapshot couvre tout)
-```
-
-**Dirty tracking** : toute mutation sur une clé déjà scannée est marquée dirty et
-resauvegardée à la fin du cycle de snapshot.
-
-### Sérialisation
-
-OxidArt n'est **pas** sérialisé directement (HiSlab avec raw pointers, index croisés).
-Seules les données brutes sont sérialisées :
-
-```rust
-// snapshot = liste de (key_bytes, Value)
-// restore = O(n) inserts dans un OxidArt neuf
-
-impl Serialize for SharedByte {
-    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_bytes(self.as_slice())  // déréférence ptr → bytes bruts
-    }
-}
-// la deserialize crée une nouvelle allocation mimalloc
-// le ptr original n'est jamais sérialisé
-```
+- **Log pur** : trace d'événements pour un humain (connexions, liens magiques émis,
+  suppressions par l'admin…), fichier append-only écrit par audio, **jamais relu** par
+  le serveur, aucun impact sur l'état.
+- **Logique métier** (messages, tombstones, compteur, sessions) : **OxidArt**. Si la
+  durabilité entre deux saves devient nécessaire, c'est l'**AOF d'oxidart** (reporté
+  côté radixox), pas un journal métier propre à audio.
 
 ### Restore au démarrage
 
 ```
-1. charge snapshot.bin → deserialise Vec<(key, Value)> → O(n) inserts dans OxidArt
-2. replay append-only log depuis la position après le snapshot
-3. serveur prêt
+1. reload du dump oxidart → OxidArt reconstruit
+2. serveur prêt
 ```
 
 ---
@@ -623,7 +591,7 @@ mon-discord --domain chat.example.com --port 443
 - TLS Let's Encrypt automatique
 - Zéro nginx, zéro Caddy, zéro reverse proxy
 - Zéro Docker Compose
-- Données dans `./data/` (snapshot + log + certs)
+- Données dans `./data/` (snapshot + log pur + certs)
 
 ### Où le faire tourner — indifférent au logiciel, choix de l'opérateur
 

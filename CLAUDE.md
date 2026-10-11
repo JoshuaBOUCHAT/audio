@@ -11,7 +11,7 @@ zéro dépendance externe lourde, un seul binaire serveur Linux.
 justifiée explicitement avant d'être acceptée :
 - Single-thread, single-process, single-binaire serveur (monoio / io_uring)
 - Zéro Tokio, zéro nginx/reverse-proxy, zéro Docker Compose
-- Zéro SQL — persistence via OxidArt (ART in-memory) + append-only log + snapshot
+- Zéro SQL — persistence via OxidArt (ART in-memory) + snapshot (`BGSAVE` oxidart)
 - Un seul port TLS exposé (443), y compris pour le renouvellement ACME
 - Le protocole (Protobuf) est LA source de vérité — types Rust et JS générés, jamais dupliqués à la main
 
@@ -133,9 +133,9 @@ conçu pour que le vocal s'ajoute sans refonte (cf. architecture.md pour le desi
 
 Opérations messages v1 :
 - Envoyer / lister (SyncRequest avec `last_seen_id`)
-- Supprimer : **tombstone**, pas de suppression physique. Un `LogEntry::DeleteMessage`
-  est appendé ; le contenu original n'est pas conservé, seule la suppression est
-  tracée. Nécessaire pour que `SyncResponse` puisse notifier les suppressions
+- Supprimer : **tombstone**, pas de suppression physique. Le tombstone est une donnée
+  OxidArt comme une autre (persistée par le snapshot) ; le contenu original n'est pas
+  conservé, seule la suppression est tracée. Nécessaire pour que `SyncResponse` puisse notifier les suppressions
   survenues depuis le dernier `last_seen_id` d'un client qui était hors ligne — sinon
   un client qui resync verrait un trou silencieux.
   **Droit de suppression** : l'auteur du message, ou l'admin (l'admin peut supprimer
@@ -154,10 +154,10 @@ admin lui-même).
 Un **compteur global `u64` unique**, pas de compteur par entité/par salon — le plus
 simple possible, u64 est virtuellement infini même si des valeurs sont "gâchées" côté
 edge cases. Pattern : lire la valeur courante, l'utiliser comme ID, incrémenter,
-persister. Le compteur est sauvegardé avec le snapshot. Filet de sécurité pas cher au
-replay du log après un snapshot : recaler le compteur sur `max(ID déjà vu) + 1` plutôt
-que de faire confiance aveuglément à la valeur du snapshot — évite une collision d'ID
-si le process meurt entre l'incrément et la persistance du compteur.
+persister. Le compteur est une clé OxidArt (`id_counter`, `incr`) et part dans le
+snapshot avec le reste : snapshot et compteur sont toujours cohérents entre eux. Le
+jour où un journal existe (cf. § Persistance), recaler le compteur au replay sur
+`max(ID déjà vu) + 1` plutôt que de faire confiance à la valeur du snapshot.
 
 ## WebRTC — post-v1 (à garder en tête dès la conception du protocole)
 
@@ -180,11 +180,22 @@ périodique via un job cron est une piste pour plus tard, pas un prérequis.
 conteneur léger / micro-docker prévue côté déploiement, pas dans le code applicatif).
 Le snapshot suit déjà la règle atomique (rename seulement si le scan est complet ;
 sinon l'ancien snapshot fait foi) — cette garantie existe déjà et couvre le cas crash
-pendant un snapshot. La détection d'une entrée de log tronquée (crash pendant
-l'écriture d'un `LogEntry`) doit être gérée simplement au replay : lire jusqu'à la
-première entrée invalide/incomplète et tronquer là, sans complexifier plus que ça.
+pendant un snapshot.
 
-**Pas de chiffrement des données au repos en v1.** Log et snapshot restent en clair sur
+**Persistance v1 = BGSAVE only** (décision 2026-10-11). Snapshot oxidart (`BGSAVE`,
+reload en masse au démarrage), pas de journal. Conséquence assumée : un crash perd ce
+qui a été écrit depuis la dernière save.
+
+Règle de partage log / oxidart :
+- **Log pur** (trace d'événements lisible par un humain, jamais relu par le serveur :
+  connexions, liens magiques émis, suppressions par l'admin…) → simple fichier
+  append-only écrit par audio. Aucun replay, aucun impact sur l'état.
+- **Tout ce qui porte de la logique métier** (état que le serveur doit retrouver :
+  messages, tombstones, compteur, sessions) → OxidArt. Si un jour la durabilité
+  entre deux saves devient nécessaire, c'est l'AOF d'oxidart qui s'en charge (cf.
+  `SAVE_DESIGN.md` de radixox, reporté), pas un journal métier propre à audio.
+
+**Pas de chiffrement des données au repos en v1.** Le snapshot reste en clair sur
 disque — cohérent avec le reste des risques acceptés v1 (pas de rate limiting, pas de
 modération). Le chiffrement disque, si souhaité, est une responsabilité infra
 (LUKS/chiffrement au niveau OS de la VM), pas une feature du code applicatif.
