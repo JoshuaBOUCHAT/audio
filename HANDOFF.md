@@ -63,7 +63,10 @@ supprimer une fois le flow d'auth mergé.
 - ~~`CreateChannel`/salons~~ (fait 2026-10-11) : admin only (403), nom trimé non
   vide (400), unique parmi les salons texte sans tenir compte de la casse (409) ;
   `AuthResponse.channels` rempli (trié par id, DM filtrés par participants).
-  `ChannelCreated` renvoyé au seul émetteur tant que le broadcast n'existe pas.
+- ~~Broadcast~~ (fait 2026-10-11) : `back-end/src/registry.rs`, modèle proactif
+  repris du `SubRegistry` de radixox (flux TLS découpé, pas de tâche d'écriture
+  permanente). Destinataires : connexions authentifiées sauf l'émetteur, qui reçoit
+  sa réponse avec `request_id`. Front : `ProtocolClient.onEvent`.
 - ~~Persistance~~ (fait 2026-10-11) : `back-end/src/persist.rs`, reload de
   `data/dump.rxd` (`AUDIO_DATA_DIR`) au démarrage + `SAVE` bloquante sur
   SIGINT/SIGTERM (second signal : sortie sans save). Copie allégée de

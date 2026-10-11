@@ -42,13 +42,14 @@ export interface WebSocketLike {
 
 /**
  * Corrèle chaque ClientEnvelope envoyé à sa réponse via `request_id` : une requête,
- * une Promise résolue par le ServerEnvelope portant le même id. Ne gère pas les
- * messages non sollicités (broadcast, request_id vide) — à câbler séparément quand
- * le premier cas d'usage se présentera.
+ * une Promise résolue par le ServerEnvelope portant le même id. Les messages non
+ * sollicités (broadcast, `request_id` vide — ex. ChannelCreated d'un autre client)
+ * vont au listener enregistré par `onEvent`.
  */
 export class ProtocolClient {
   private readonly socket: WebSocketLike;
   private readonly pending = new Map<string, (envelope: ServerEnvelope) => void>();
+  private eventListener: ((envelope: ServerEnvelope) => void) | null = null;
 
   constructor(socket: WebSocketLike) {
     this.socket = socket;
@@ -65,8 +66,16 @@ export class ProtocolClient {
     });
   }
 
+  onEvent(listener: (envelope: ServerEnvelope) => void): void {
+    this.eventListener = listener;
+  }
+
   private onMessage(event: { data: unknown }): void {
     const envelope = decodeServerEnvelope(new Uint8Array(event.data as ArrayBuffer));
+    if (!envelope.requestId) {
+      this.eventListener?.(envelope);
+      return;
+    }
     const resolve = this.pending.get(envelope.requestId);
     if (!resolve) return;
     this.pending.delete(envelope.requestId);

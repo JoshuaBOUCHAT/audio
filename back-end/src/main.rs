@@ -1,6 +1,7 @@
 mod email;
 mod persist;
 mod proto;
+mod registry;
 mod validate;
 
 use std::env;
@@ -10,7 +11,7 @@ use std::time::Duration;
 use aws_lc_rs::digest::{digest, SHA1_FOR_LEGACY_USE_ONLY};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
+use monoio::io::{AsyncReadRent, AsyncWriteRentExt, OwnedReadHalf, Splitable};
 use monoio::net::{TcpListener, TcpStream};
 use oxidart::monoio::SharedArt;
 use oxidart::{OxidArt, Value};
@@ -22,6 +23,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use uuid::Uuid;
 
 use email::Email;
+use registry::{ConnId, SharedRegistry, TlsStream};
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // Story 4 : pas de valeur imposée par CLAUDE.md, 15 minutes retenu (assez court pour
@@ -36,6 +38,7 @@ const MAGIC_LINK_TTL: Duration = Duration::from_secs(15 * 60);
 struct AppState {
     art: SharedArt,
     bootstrap_admin_email: Option<Email>,
+    registry: SharedRegistry,
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -87,6 +90,7 @@ async fn main() {
     let state = AppState {
         art,
         bootstrap_admin_email,
+        registry: SharedRegistry::default(),
     };
 
     let listener = TcpListener::bind("127.0.0.1:8443").expect("bind :8443");
@@ -184,18 +188,26 @@ async fn handle_ws_upgrade(
     tls.write_all(response.into_bytes()).await.0.map(|_| ())
 }
 
-// Boucle requête/réponse : une frame binaire entrante = un ClientEnvelope protobuf,
-// traité et immédiatement répondu par un ServerEnvelope sur la même connexion — pas
-// de split lecture/écriture nécessaire tant qu'il n'y a pas d'événements poussés côté
-// serveur en dehors d'une réponse directe (broadcast à câbler plus tard).
+// Boucle de lecture : une frame binaire entrante = un ClientEnvelope protobuf. Le flux
+// TLS est découpé : cette tâche garde la moitié lecture, la moitié écriture vit dans le
+// registre, par lequel passent la réponse directe comme les broadcasts poussés par
+// d'autres connexions (cf. registry.rs).
 // Story 33 : l'auth se fait une fois par connexion WebSocket (AuthRequest), puis
 // l'identité est portée par `user_id` en mémoire pour toute la durée de vie de cette
 // connexion — aucune requête suivante n'a besoin de reporter un token.
-async fn handle_ws_connection(mut tls: monoio_rustls::ServerTlsStream<TcpStream>, state: AppState) {
+async fn handle_ws_connection(tls: TlsStream, state: AppState) {
+    let (read, write) = tls.into_split();
+    let conn = state.registry.borrow_mut().insert(write);
+    read_loop(read, conn, &state).await;
+    state.registry.borrow_mut().remove(conn);
+    println!("[ws] connexion terminée");
+}
+
+async fn read_loop(mut read: OwnedReadHalf<TlsStream>, conn: ConnId, state: &AppState) {
     let mut buf = vec![0u8; 4096];
     let mut user_id: Option<u64> = None;
     loop {
-        let (res, b) = tls.read(buf).await;
+        let (res, b) = read.read(buf).await;
         buf = b;
         let n = match res {
             Ok(0) | Err(_) => break,
@@ -214,23 +226,25 @@ async fn handle_ws_connection(mut tls: monoio_rustls::ServerTlsStream<TcpStream>
                         continue;
                     }
                 };
-                let Some(response) = handle_client_envelope(envelope, &state, &mut user_id) else {
+                let Some(response) = handle_client_envelope(envelope, state, conn, &mut user_id)
+                else {
                     continue;
                 };
-                let frame = encode_ws_frame(0x2, &response.encode_to_vec());
-                if tls.write_all(frame).await.0.is_err() {
-                    break;
-                }
+                registry::send(&state.registry, conn, &server_frame(&response));
             }
             _ => {} // texte/ping/pong non gérés à ce stade
         }
     }
-    println!("[ws] connexion terminée");
+}
+
+fn server_frame(envelope: &proto::ServerEnvelope) -> Vec<u8> {
+    encode_ws_frame(0x2, &envelope.encode_to_vec())
 }
 
 fn handle_client_envelope(
     envelope: proto::ClientEnvelope,
     state: &AppState,
+    conn: ConnId,
     user_id: &mut Option<u64>,
 ) -> Option<proto::ServerEnvelope> {
     use proto::client_envelope::Payload;
@@ -256,17 +270,30 @@ fn handle_client_envelope(
         },
         Some(Payload::Auth(req)) => match validate::validate_auth_request(req) {
             Ok(valid) => match handle_auth(valid.token, state, user_id) {
-                Ok(response) => proto::server_envelope::Payload::AuthResponse(response),
+                Ok(response) => {
+                    state.registry.borrow_mut().mark_authenticated(conn);
+                    proto::server_envelope::Payload::AuthResponse(response)
+                }
                 Err(err) => proto::server_envelope::Payload::Error(err),
             },
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
         Some(Payload::CreateChannel(req)) => match create_channel(req, state, *user_id) {
-            Ok(channel) => proto::server_envelope::Payload::ChannelCreated(
-                proto::ChannelCreated {
-                    channel: Some(channel),
-                },
-            ),
+            Ok(channel) => {
+                let created = proto::server_envelope::Payload::ChannelCreated(
+                    proto::ChannelCreated {
+                        channel: Some(channel),
+                    },
+                );
+                // Les autres clients authentifiés l'apprennent par broadcast
+                // (request_id vide) ; l'émetteur, par sa réponse ci-dessous.
+                let event = proto::ServerEnvelope {
+                    request_id: String::new(),
+                    payload: Some(created.clone()),
+                };
+                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                created
+            }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
         _ => {
@@ -415,9 +442,6 @@ fn list_channels(art: &OxidArt, user_id: u64) -> Vec<proto::Channel> {
 /// Story 7 : création de salon texte, admin uniquement (seule distinction de
 /// privilège du système, cf. CLAUDE.md), nom unique parmi les salons texte. Le statut admin est relu dans `user:{id}`
 /// plutôt que mis en cache sur la connexion.
-///
-/// Réponse au seul émetteur pour l'instant : le broadcast `ChannelCreated` à tous les
-/// clients connectés (architecture.md § Flows) attend le registre de connexions.
 fn create_channel(
     req: proto::CreateChannel,
     state: &AppState,

@@ -1,5 +1,6 @@
 // Page de debug (zéro CSS) : RequestMagicLink → token copié depuis les logs serveur →
-// AuthRequest → CreateChannel, réponses brutes. Accessible sur /debug.
+// AuthRequest → CreateChannel, réponses et broadcasts reçus bruts. Accessible sur
+// /debug (ouvrir deux onglets pour voir un broadcast passer de l'un à l'autre).
 
 import { useRef, useState } from "react"
 import { ProtocolClient, authRequest, createChannel, requestMagicLink } from "@/lib/protocol"
@@ -8,9 +9,10 @@ const BACK_END_URL = "wss://127.0.0.1:8443"
 
 type Connection = { socket: WebSocket; client: ProtocolClient }
 
-function connect(): Promise<Connection> {
+function connect(onEvent: (json: string) => void): Promise<Connection> {
   const socket = new WebSocket(BACK_END_URL)
   const client = new ProtocolClient(socket)
+  client.onEvent((envelope) => onEvent(JSON.stringify(envelope.toJSON())))
   return new Promise((resolve, reject) => {
     socket.addEventListener("open", () => resolve({ socket, client }), { once: true })
     socket.addEventListener("error", () => reject(new Error(
@@ -24,6 +26,7 @@ export function AuthDebug() {
   const [token, setToken] = useState("")
   const [channelName, setChannelName] = useState("")
   const [output, setOutput] = useState("")
+  const [events, setEvents] = useState<string[]>([])
   // L'auth est liée à la connexion WS (story 33) : une seule connexion réutilisée
   // pour toutes les requêtes, « Nouvelle connexion » pour repartir d'un WS vierge
   // (ex. tester une reprise de session avec le session_token).
@@ -32,7 +35,7 @@ export function AuthDebug() {
   async function send(payload: Parameters<ProtocolClient["request"]>[0]) {
     try {
       if (connection.current?.socket.readyState !== WebSocket.OPEN) {
-        connection.current = await connect()
+        connection.current = await connect((json) => setEvents((prev) => [...prev, json]))
       }
       const response = await connection.current.client.request(payload)
       setOutput(JSON.stringify(response.toJSON(), null, 2))
@@ -78,6 +81,9 @@ export function AuthDebug() {
       </form>
 
       <pre>{output}</pre>
+
+      <h2>Broadcasts reçus</h2>
+      <pre>{events.join("\n")}</pre>
     </div>
   )
 }
