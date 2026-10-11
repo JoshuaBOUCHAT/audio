@@ -143,9 +143,12 @@ async fn read_ws_upgrade_request(
         Ok(n) => n,
     };
 
-    let mut headers = [httparse::EMPTY_HEADER; 16];
+    // 64 : un navigateur envoie bien plus que 16 en-têtes (Origin, Sec-Fetch-*,
+    // Accept-Language, Cookie…) — au-delà, httparse renvoie TooManyHeaders.
+    let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
-    if req.parse(&buf[..n]).is_err() {
+    if let Err(e) = req.parse(&buf[..n]) {
+        eprintln!("[http] requête illisible: {e:?}");
         return None;
     }
     Some(
