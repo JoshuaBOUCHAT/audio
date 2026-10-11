@@ -138,7 +138,7 @@ liste utilisent `getn(prefix)` (traversal ART natif, O(k)).
 | `magiclink:{token}` | `email` (string) | **TTL courte** via `set_ttl` — expire seule, zéro code de nettoyage |
 | `session:{token}` | `user_id` (u64) | pas de TTL en v1 — révocation = `del` explicite (non implémenté v1) |
 | `channel:{id}` | `Channel` (bincode) | listing via `getn("channel:")` |
-| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **base64 trié sur 6 caractères** (alphabet `-0-9A-Z_a-z`, rangé dans l'ordre ASCII ; cf. `back-end/src/keys.rs`) — les clés OxidArt doivent être ASCII, et la longueur fixe fait correspondre l'ordre lexicographique de l'ART à l'ordre chronologique — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
+| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **base64 sur 6 caractères** (cf. `back-end/src/keys.rs`, clés OxidArt ASCII). `getn` d'oxidart renvoie les clés dans l'ordre d'insertion des enfants (non triés), pas dans l'ordre lexicographique : la sync trie par id — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
 | `global_id_counter` | `u64` | un seul compteur partagé user/channel/message (cf. section IDs plus bas) ; clé OxidArt (`id_counter`, `incr`), persisté par le snapshot comme le reste |
 
 ### Flows
@@ -175,8 +175,9 @@ Serveur --NewMessage{message}--> TOUS les clients connectés (broadcast global,
 ```
 Client --SyncRequest{channel_id, last_seen_id}--> Serveur
 Serveur: getn("message:{channel_id}:") -> filtre id > last_seen_id
-         (inclut les messages deleted=true pour réconcilier les suppressions
-         survenues pendant la déconnexion)
+         (inclut les messages deleted=true)
+v1 : le client envoie last_seen_id = 0 à la reconnexion (resync complète) — seul
+moyen de voir les suppressions de messages d'id ≤ last_seen_id (cf. story 15)
 Serveur --SyncResponse{channel_id, messages}--> Client
 ```
 

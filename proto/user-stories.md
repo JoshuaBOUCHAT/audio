@@ -58,6 +58,12 @@ Protobuf qu'elle justifie dans `messages.proto`.
 15. En tant qu'utilisateur qui était hors ligne, je veux être informé des messages
     supprimés pendant mon absence lors de ma resynchronisation, pour que mon
     historique local reste cohérent (pas de trou silencieux).
+    **Décision v1 (2026-10-11)** : à la reconnexion, le client resynchronise depuis
+    zéro (`SyncRequest.last_seen_id = 0`) et remplace son historique local. Le
+    serveur renvoie tout le salon, tombstones compris (`deleted=true`). Limite
+    connue : avec un `last_seen_id > 0`, la suppression d'un message d'id ≤
+    `last_seen_id` n'est pas renvoyée — à traiter (ex. id de suppression tiré du
+    compteur global + index des tombstones) si la resync complète devient trop lourde.
 
 ### Résilience (côté produit, pas juste infra)
 

@@ -1,9 +1,10 @@
-//! Encodage des ids dans les clés OxidArt dont l'ordre compte (`message:{ch}:{id}`).
+//! Encodage des ids dans les clés `message:{ch}:{id}` : base64 (clés OxidArt ASCII),
+//! alphabet rangé dans l'ordre ASCII (`-`, `0-9`, `A-Z`, `_`, `a-z`) sur une
+//! longueur fixe, donc ordre des octets = ordre numérique.
 //!
-//! Les clés OxidArt sont ASCII et `getn(prefix)` les renvoie dans l'ordre des octets :
-//! pour que cet ordre soit l'ordre chronologique, l'id est écrit en base64 avec un
-//! alphabet rangé dans l'ordre ASCII (`-`, `0-9`, `A-Z`, `_`, `a-z` — pas l'alphabet
-//! base64 standard, qui ne trie pas) et sur une longueur fixe de 6 caractères, soit
+//! Attention : oxidart ne trie pas les enfants d'un nœud, `getn` renvoie les clés
+//! dans l'ordre d'insertion (modifié par un reload du dump). L'ordre des clés n'est
+//! donc PAS exploité — les appelants trient par id. Longueur fixe de 6 caractères, soit
 //! 2³⁶ ≈ 69 milliards d'ids : le compteur reste un u64, mais un serveur entre amis
 //! n'approchera jamais cette borne (18 000 ans à 10 000 messages/jour).
 

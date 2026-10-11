@@ -33,6 +33,15 @@ export function sendMessage(channelId: number, content: string): ClientEnvelopeS
   return { payload: "sendMessage", sendMessage: { channelId, content } };
 }
 
+/** `lastSeenId = 0` : resync complète du salon, à utiliser à la reconnexion (story 15). */
+export function syncRequest(channelId: number, lastSeenId: number): ClientEnvelopeShape {
+  return { payload: "sync", sync: { channelId, lastSeenId } };
+}
+
+export function deleteMessage(channelId: number, messageId: number): ClientEnvelopeShape {
+  return { payload: "deleteMessage", deleteMessage: { channelId, messageId } };
+}
+
 /**
  * Sous-ensemble de l'API WebSocket dont ProtocolClient a besoin — le DOM (navigateur)
  * et le paquet npm `ws` (Node) l'implémentent tous les deux, ce qui permet au même

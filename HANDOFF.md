@@ -80,7 +80,8 @@ supprimer une fois le flow d'auth mergé.
   (DM refusés tant que la livraison ciblée n'existe pas) ; `NewMessage` en réponse +
   broadcast. Clés `message:{ch}:{id}` avec id en base64 trié sur 6 caractères
   (`keys.rs`).
-- **SyncRequest / DeleteMessage** : à faire. Problème ouvert sur la sync des
-  suppressions (story 15) : un tombstone d'un message d'id ≤ `last_seen_id` n'est
-  pas renvoyé par le filtre `id > last_seen_id`.
+- ~~SyncRequest / DeleteMessage~~ (fait 2026-10-11) : resync depuis 0 à la
+  reconnexion (décision story 15), tombstones (`deleted`, contenu vidé), droit
+  auteur ou admin (403), `MessageDeleted` en réponse + broadcast. Sync triée par id :
+  `getn` d'oxidart renvoie l'ordre d'insertion, pas l'ordre des clés.
 - Pas de broadcast/diffusion : hors scope de ce ticket.

@@ -323,6 +323,22 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::Sync(req)) => match sync_messages(req, state, *user_id) {
+            Ok(response) => proto::server_envelope::Payload::SyncResponse(response),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::DeleteMessage(req)) => match delete_message(req, state, *user_id) {
+            Ok(deleted) => {
+                let deleted = proto::server_envelope::Payload::MessageDeleted(deleted);
+                let event = proto::ServerEnvelope {
+                    request_id: String::new(),
+                    payload: Some(deleted.clone()),
+                };
+                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                deleted
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         _ => {
             eprintln!("[ws] type de ClientEnvelope non géré");
             return None;
@@ -446,9 +462,8 @@ fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
 }
 
 /// Story 8 : tous les salons sont visibles par tout le monde, sauf les DM (stories
-/// 28-32), réservés à leurs deux participants. Clés `channel:{id}` en décimal, donc
-/// ordre lexicographique ≠ ordre de création : tri par id ici (quelques salons,
-/// coût négligeable).
+/// 28-32), réservés à leurs deux participants. `getn` ne renvoie pas les clés triées
+/// (cf. `sync_messages`) : tri par id ici (quelques salons, coût négligeable).
 fn list_channels(art: &OxidArt, user_id: u64) -> Vec<proto::Channel> {
     let mut channels: Vec<proto::Channel> = art
         .getn(SharedByte::from_str("channel:"))
@@ -475,10 +490,7 @@ fn create_channel(
     state: &AppState,
     user_id: Option<u64>,
 ) -> Result<proto::Channel, proto::Error> {
-    let user_id = user_id.ok_or_else(|| proto::Error {
-        code: 401,
-        message: "non authentifié".to_string(),
-    })?;
+    let user_id = require_auth(user_id)?;
     let valid = validate::validate_create_channel(req)?;
 
     let mut art = state.art.borrow_mut();
@@ -521,23 +533,19 @@ fn create_channel(
     Ok(channel)
 }
 
-/// Story 10 : envoi dans un salon texte existant, par n'importe quel utilisateur
-/// authentifié (pas de « rejoindre », story 9). Les DM sont refusés tant que leur
-/// livraison ciblée n'existe pas : le broadcast global les montrerait à tout le monde.
-fn send_message(
-    req: proto::SendMessage,
-    state: &AppState,
-    user_id: Option<u64>,
-) -> Result<proto::Message, proto::Error> {
-    let user_id = user_id.ok_or_else(|| proto::Error {
+fn require_auth(user_id: Option<u64>) -> Result<u64, proto::Error> {
+    user_id.ok_or_else(|| proto::Error {
         code: 401,
         message: "non authentifié".to_string(),
-    })?;
-    let valid = validate::validate_send_message(req)?;
+    })
+}
 
-    let mut art = state.art.borrow_mut();
+/// Salon texte existant. Les DM sont refusés par toutes les opérations sur les
+/// messages tant que leur livraison ciblée n'existe pas : le broadcast global les
+/// montrerait à tout le monde.
+fn check_text_channel(art: &mut OxidArt, channel_id: u64) -> Result<(), proto::Error> {
     let channel_bytes = art
-        .get(format!("channel:{}", valid.channel_id).as_bytes())
+        .get(format!("channel:{channel_id}").as_bytes())
         .ok_or_else(|| proto::Error {
             code: 404,
             message: "salon inconnu".to_string(),
@@ -549,9 +557,31 @@ fn send_message(
     if channel.r#type() != proto::channel::Type::Text {
         return Err(proto::Error {
             code: 400,
-            message: "envoi possible uniquement dans un salon texte".to_string(),
+            message: "opération possible uniquement dans un salon texte".to_string(),
         });
     }
+    Ok(())
+}
+
+fn decode_message(val: &Value) -> proto::Message {
+    bincode::deserialize(
+        val.as_bytes().expect("message toujours Value::String").as_slice(),
+    )
+    .expect("message corrompu")
+}
+
+/// Story 10 : envoi dans un salon texte existant, par n'importe quel utilisateur
+/// authentifié (pas de « rejoindre », story 9).
+fn send_message(
+    req: proto::SendMessage,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Message, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let valid = validate::validate_send_message(req)?;
+
+    let mut art = state.art.borrow_mut();
+    check_text_channel(&mut art, valid.channel_id)?;
 
     let id = art
         .incr(SharedByte::from_str("id_counter"))
@@ -575,6 +605,74 @@ fn send_message(
     );
     state.dirty.set(true);
     Ok(message)
+}
+
+/// Stories 12 et 15 : messages d'id > `last_seen_id`, tombstones compris, triés par
+/// id. Le tri est nécessaire : `getn` renvoie les clés dans l'ordre d'insertion des
+/// enfants de l'ART (non triés dans oxidart), et un reload du dump change cet ordre.
+/// En v1 le client envoie 0 à la reconnexion et reçoit tout le salon (cf.
+/// user-stories.md, story 15).
+fn sync_messages(
+    req: proto::SyncRequest,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::SyncResponse, proto::Error> {
+    require_auth(user_id)?;
+    let mut art = state.art.borrow_mut();
+    check_text_channel(&mut art, req.channel_id)?;
+    let mut messages: Vec<proto::Message> = art
+        .getn(SharedByte::from_str(&keys::message_prefix(req.channel_id)))
+        .iter()
+        .map(|(_, val)| decode_message(val))
+        .filter(|m| m.id > req.last_seen_id)
+        .collect();
+    messages.sort_unstable_by_key(|m| m.id);
+    Ok(proto::SyncResponse {
+        channel_id: req.channel_id,
+        messages,
+    })
+}
+
+/// Stories 13-14 : tombstone, pas de suppression physique — le contenu est effacé,
+/// le message reste avec `deleted = true` pour que la resync le reflète. Droit :
+/// l'auteur, ou l'admin sur n'importe quel message. Supprimer un message déjà
+/// supprimé est accepté (idempotent) et rediffusé.
+fn delete_message(
+    req: proto::DeleteMessage,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::MessageDeleted, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let mut art = state.art.borrow_mut();
+    check_text_channel(&mut art, req.channel_id)?;
+
+    let key = keys::message_key(req.channel_id, req.message_id);
+    let mut message = art
+        .get(key.as_bytes())
+        .map(|val| decode_message(&val))
+        .ok_or_else(|| proto::Error {
+            code: 404,
+            message: "message inconnu".to_string(),
+        })?;
+    if message.user_id != user_id && !load_user(&mut art, user_id).is_admin {
+        return Err(proto::Error {
+            code: 403,
+            message: "seuls l'auteur et l'admin peuvent supprimer ce message".to_string(),
+        });
+    }
+
+    message.deleted = true;
+    message.content.clear();
+    let encoded = bincode::serialize(&message).expect("sérialisation Message");
+    art.set(
+        SharedByte::from_str(&key),
+        Value::String(SharedByte::from_slice(encoded)),
+    );
+    state.dirty.set(true);
+    Ok(proto::MessageDeleted {
+        channel_id: req.channel_id,
+        message_id: req.message_id,
+    })
 }
 
 fn compute_accept(key: &str) -> String {

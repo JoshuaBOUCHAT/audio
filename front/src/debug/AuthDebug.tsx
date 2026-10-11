@@ -1,9 +1,17 @@
 // Page de debug (zéro CSS) : RequestMagicLink → token copié depuis les logs serveur →
-// AuthRequest → CreateChannel / SendMessage, réponses et broadcasts reçus bruts. Accessible sur
+// AuthRequest → CreateChannel / SendMessage / SyncRequest / DeleteMessage, réponses et broadcasts reçus bruts. Accessible sur
 // /debug (ouvrir deux onglets pour voir un broadcast passer de l'un à l'autre).
 
 import { useRef, useState } from "react"
-import { ProtocolClient, authRequest, createChannel, requestMagicLink, sendMessage } from "@/lib/protocol"
+import {
+  ProtocolClient,
+  authRequest,
+  createChannel,
+  deleteMessage,
+  requestMagicLink,
+  sendMessage,
+  syncRequest,
+} from "@/lib/protocol"
 
 const BACK_END_URL = "wss://127.0.0.1:8443"
 
@@ -27,6 +35,7 @@ export function AuthDebug() {
   const [channelName, setChannelName] = useState("")
   const [channelId, setChannelId] = useState("")
   const [content, setContent] = useState("")
+  const [messageId, setMessageId] = useState("")
   const [output, setOutput] = useState("")
   const [events, setEvents] = useState<string[]>([])
   // L'auth est liée à la connexion WS (story 33) : une seule connexion réutilisée
@@ -91,6 +100,24 @@ export function AuthDebug() {
         />
         <input value={content} onChange={(e) => setContent(e.target.value)} placeholder="message" />
         <button type="submit">SendMessage</button>
+        <button type="button" onClick={() => void send(syncRequest(Number(channelId), 0))}>
+          SyncRequest (depuis 0)
+        </button>
+      </form>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void send(deleteMessage(Number(channelId), Number(messageId)))
+        }}
+      >
+        <input
+          value={messageId}
+          onChange={(e) => setMessageId(e.target.value)}
+          placeholder="id du message"
+          size={8}
+        />
+        <button type="submit">DeleteMessage (salon ci-dessus)</button>
       </form>
 
       <pre>{output}</pre>
