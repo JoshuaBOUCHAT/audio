@@ -38,3 +38,25 @@ pub fn validate_auth_request(raw: proto::AuthRequest) -> Result<ValidAuthRequest
     })?;
     Ok(ValidAuthRequest { token })
 }
+
+/// Story 7 : un salon sans nom n'a aucune interprétation métier (le client n'aurait
+/// rien à afficher), donc rejeté ici. Le nom est trimé ; pas de longueur max en v1.
+/// L'unicité, qui dépend de l'état, est vérifiée par `create_channel`.
+pub struct ValidCreateChannel {
+    pub name: String,
+}
+
+pub fn validate_create_channel(
+    raw: proto::CreateChannel,
+) -> Result<ValidCreateChannel, proto::Error> {
+    let name = raw.name.trim();
+    if name.is_empty() {
+        return Err(proto::Error {
+            code: 400,
+            message: "nom de salon vide".to_string(),
+        });
+    }
+    Ok(ValidCreateChannel {
+        name: name.to_string(),
+    })
+}

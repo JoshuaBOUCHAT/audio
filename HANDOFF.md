@@ -60,6 +60,15 @@ supprimer une fois le flow d'auth mergé.
   servie sur `/debug` (`npm run dev` → http://localhost:5173/debug). Accepter d'abord
   le cert auto-signé en ouvrant https://127.0.0.1:8443 dans le navigateur, sinon le
   WebSocket est refusé.
-- `CreateChannel`/salons pas encore implémenté — `AuthResponse.channels` reste
-  volontairement vide.
+- ~~`CreateChannel`/salons~~ (fait 2026-10-11) : admin only (403), nom trimé non
+  vide (400), unique parmi les salons texte sans tenir compte de la casse (409) ;
+  `AuthResponse.channels` rempli (trié par id, DM filtrés par participants).
+  `ChannelCreated` renvoyé au seul émetteur tant que le broadcast n'existe pas.
+- ~~Persistance~~ (fait 2026-10-11) : `back-end/src/persist.rs`, reload de
+  `data/dump.rxd` (`AUDIO_DATA_DIR`) au démarrage + `SAVE` bloquante sur
+  SIGINT/SIGTERM (second signal : sortie sans save). Copie allégée de
+  `resp_cmd/bgsave.rs`/`shutdown.rs` de radixox — à remonter dans oxidart si les deux
+  projets doivent partager ce code.
+- **BGSAVE périodique** pas encore fait : un crash / `kill -9` perd tout depuis le
+  dernier démarrage, seul l'arrêt propre sauve.
 - Pas de broadcast/diffusion : hors scope de ce ticket.

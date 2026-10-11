@@ -1,14 +1,14 @@
-// Page de debug du flow d'auth (zéro CSS) : RequestMagicLink → token copié depuis les
-// logs serveur → AuthRequest → AuthResponse brute. Accessible sur /debug.
+// Page de debug (zéro CSS) : RequestMagicLink → token copié depuis les logs serveur →
+// AuthRequest → CreateChannel, réponses brutes. Accessible sur /debug.
 
-import { useState } from "react"
-import { ProtocolClient, authRequest, requestMagicLink } from "@/lib/protocol"
+import { useRef, useState } from "react"
+import { ProtocolClient, authRequest, createChannel, requestMagicLink } from "@/lib/protocol"
 
 const BACK_END_URL = "wss://127.0.0.1:8443"
 
-// Une connexion WS neuve par requête : l'auth étant liée à la connexion, ça permet
-// aussi de rejouer une reprise de session (session_token) sur un WS vierge.
-function connect(): Promise<{ socket: WebSocket; client: ProtocolClient }> {
+type Connection = { socket: WebSocket; client: ProtocolClient }
+
+function connect(): Promise<Connection> {
   const socket = new WebSocket(BACK_END_URL)
   const client = new ProtocolClient(socket)
   return new Promise((resolve, reject) => {
@@ -22,22 +22,36 @@ function connect(): Promise<{ socket: WebSocket; client: ProtocolClient }> {
 export function AuthDebug() {
   const [email, setEmail] = useState("")
   const [token, setToken] = useState("")
+  const [channelName, setChannelName] = useState("")
   const [output, setOutput] = useState("")
+  // L'auth est liée à la connexion WS (story 33) : une seule connexion réutilisée
+  // pour toutes les requêtes, « Nouvelle connexion » pour repartir d'un WS vierge
+  // (ex. tester une reprise de session avec le session_token).
+  const connection = useRef<Connection | null>(null)
 
   async function send(payload: Parameters<ProtocolClient["request"]>[0]) {
     try {
-      const { socket, client } = await connect()
-      const response = await client.request(payload)
-      socket.close()
+      if (connection.current?.socket.readyState !== WebSocket.OPEN) {
+        connection.current = await connect()
+      }
+      const response = await connection.current.client.request(payload)
       setOutput(JSON.stringify(response.toJSON(), null, 2))
     } catch (e) {
       setOutput(String(e))
     }
   }
 
+  function reconnect() {
+    connection.current?.socket.close()
+    connection.current = null
+    setOutput("connexion fermée — la prochaine requête ouvre un WS vierge (non authentifié)")
+  }
+
   return (
     <div>
       <h1>Debug auth</h1>
+
+      <button type="button" onClick={reconnect}>Nouvelle connexion</button>
 
       <form onSubmit={(e) => { e.preventDefault(); void send(requestMagicLink(email)) }}>
         <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
@@ -52,6 +66,15 @@ export function AuthDebug() {
           size={40}
         />
         <button type="submit">AuthRequest</button>
+      </form>
+
+      <form onSubmit={(e) => { e.preventDefault(); void send(createChannel(channelName)) }}>
+        <input
+          value={channelName}
+          onChange={(e) => setChannelName(e.target.value)}
+          placeholder="nom du salon"
+        />
+        <button type="submit">CreateChannel</button>
       </form>
 
       <pre>{output}</pre>

@@ -270,6 +270,7 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "bincode",
+ "crc32fast",
  "futures",
  "httparse",
  "monoio",

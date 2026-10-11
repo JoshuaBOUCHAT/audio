@@ -1,4 +1,5 @@
 mod email;
+mod persist;
 mod proto;
 mod validate;
 
@@ -81,6 +82,8 @@ async fn main() {
     }
 
     let art = OxidArt::shared_with_evictor(Duration::from_millis(100), Duration::from_secs(1));
+    persist::load_at_startup(&art).expect("reload du dump");
+    persist::install_shutdown(art.clone());
     let state = AppState {
         art,
         bootstrap_admin_email,
@@ -258,6 +261,14 @@ fn handle_client_envelope(
             },
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::CreateChannel(req)) => match create_channel(req, state, *user_id) {
+            Ok(channel) => proto::server_envelope::Payload::ChannelCreated(
+                proto::ChannelCreated {
+                    channel: Some(channel),
+                },
+            ),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         _ => {
             eprintln!("[ws] type de ClientEnvelope non géré");
             return None;
@@ -312,13 +323,7 @@ fn handle_auth(
                     .expect("id toujours ASCII")
                     .parse()
                     .expect("id_counter toujours numérique");
-                let user_bytes = art
-                    .get(format!("user:{id}").as_bytes())
-                    .expect("email_index sans user:{id} correspondant — invariant violé");
-                bincode::deserialize::<proto::User>(
-                    user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
-                )
-                .expect("user:{id} corrompu")
+                load_user(&mut art, id)
             }
             None => {
                 let id = art
@@ -360,22 +365,107 @@ fn handle_auth(
             .expect("id toujours ASCII")
             .parse()
             .expect("session id toujours numérique");
-        let user_bytes = art
-            .get(format!("user:{id}").as_bytes())
-            .expect("session sans user:{id} correspondant — invariant violé");
-        let user: proto::User = bincode::deserialize(
-            user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
-        )
-        .expect("user:{id} corrompu");
-        (user, token) // token de session déjà valide : pas de rotation, renvoyé tel quel
+        (load_user(&mut art, id), token) // token de session déjà valide : pas de rotation, renvoyé tel quel
     };
 
     user_id_slot.replace(user.id);
+    let channels = list_channels(&art, user.id);
     Ok(proto::AuthResponse {
         me: Some(user),
-        channels: vec![], // vide tant que CreateChannel/le stockage de salons n'existe pas
+        channels,
         session_token: session_token.to_string(),
     })
+}
+
+/// Toute référence `user:{id}` vient d'un index ou d'une session écrits par
+/// `handle_auth` dans le même emprunt que `user:{id}` lui-même : une absence est une
+/// violation d'invariant, pas une erreur métier.
+fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
+    let user_bytes = art
+        .get(format!("user:{id}").as_bytes())
+        .expect("référence vers user:{id} inexistant — invariant violé");
+    bincode::deserialize(
+        user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
+    )
+    .expect("user:{id} corrompu")
+}
+
+/// Story 8 : tous les salons sont visibles par tout le monde, sauf les DM (stories
+/// 28-32), réservés à leurs deux participants. Clés `channel:{id}` en décimal, donc
+/// ordre lexicographique ≠ ordre de création : tri par id ici (quelques salons,
+/// coût négligeable).
+fn list_channels(art: &OxidArt, user_id: u64) -> Vec<proto::Channel> {
+    let mut channels: Vec<proto::Channel> = art
+        .getn(SharedByte::from_str("channel:"))
+        .into_iter()
+        .map(|(_, val)| {
+            bincode::deserialize::<proto::Channel>(
+                val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
+            )
+            .expect("channel:{id} corrompu")
+        })
+        .filter(|c| {
+            c.r#type() != proto::channel::Type::Dm || c.participant_ids.contains(&user_id)
+        })
+        .collect();
+    channels.sort_unstable_by_key(|c| c.id);
+    channels
+}
+
+/// Story 7 : création de salon texte, admin uniquement (seule distinction de
+/// privilège du système, cf. CLAUDE.md), nom unique parmi les salons texte. Le statut admin est relu dans `user:{id}`
+/// plutôt que mis en cache sur la connexion.
+///
+/// Réponse au seul émetteur pour l'instant : le broadcast `ChannelCreated` à tous les
+/// clients connectés (architecture.md § Flows) attend le registre de connexions.
+fn create_channel(
+    req: proto::CreateChannel,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Channel, proto::Error> {
+    let user_id = user_id.ok_or_else(|| proto::Error {
+        code: 401,
+        message: "non authentifié".to_string(),
+    })?;
+    let valid = validate::validate_create_channel(req)?;
+
+    let mut art = state.art.borrow_mut();
+    if !load_user(&mut art, user_id).is_admin {
+        return Err(proto::Error {
+            code: 403,
+            message: "création de salon réservée à l'admin".to_string(),
+        });
+    }
+
+    // Nom unique par type de salon (un salon texte et un salon vocal peuvent partager
+    // un nom), sans tenir compte de la casse. Scan de `channel:` plutôt qu'un index
+    // dédié : quelques salons, chemin non chaud.
+    let lowered = valid.name.to_lowercase();
+    if list_channels(&art, user_id)
+        .iter()
+        .any(|c| c.r#type() == proto::channel::Type::Text && c.name.to_lowercase() == lowered)
+    {
+        return Err(proto::Error {
+            code: 409,
+            message: "un salon texte porte déjà ce nom".to_string(),
+        });
+    }
+
+    let id = art
+        .incr(SharedByte::from_str("id_counter"))
+        .expect("id_counter jamais utilisé pour autre chose qu'un entier") as u64;
+    let channel = proto::Channel {
+        id,
+        name: valid.name,
+        r#type: proto::channel::Type::Text as i32,
+        participant_ids: vec![],
+    };
+    let encoded = bincode::serialize(&channel).expect("sérialisation Channel");
+    art.set(
+        SharedByte::from_str(&format!("channel:{id}")),
+        Value::String(SharedByte::from_slice(encoded)),
+    );
+    Ok(channel)
 }
 
 fn compute_accept(key: &str) -> String {

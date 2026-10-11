@@ -25,6 +25,10 @@ export function authRequest(token: string): ClientEnvelopeShape {
   return { payload: "auth", auth: { token } };
 }
 
+export function createChannel(name: string): ClientEnvelopeShape {
+  return { payload: "createChannel", createChannel: { name } };
+}
+
 /**
  * Sous-ensemble de l'API WebSocket dont ProtocolClient a besoin — le DOM (navigateur)
  * et le paquet npm `ws` (Node) l'implémentent tous les deux, ce qui permet au même
