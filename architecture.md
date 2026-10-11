@@ -138,7 +138,7 @@ liste utilisent `getn(prefix)` (traversal ART natif, O(k)).
 | `magiclink:{token}` | `email` (string) | **TTL courte** via `set_ttl` — expire seule, zéro code de nettoyage |
 | `session:{token}` | `user_id` (u64) | pas de TTL en v1 — révocation = `del` explicite (non implémenté v1) |
 | `channel:{id}` | `Channel` (bincode) | listing via `getn("channel:")` |
-| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **8 octets big-endian** dans la clé (pas en décimal) pour que l'ordre lexicographique de l'ART corresponde à l'ordre chronologique — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
+| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **base64 trié sur 6 caractères** (alphabet `-0-9A-Z_a-z`, rangé dans l'ordre ASCII ; cf. `back-end/src/keys.rs`) — les clés OxidArt doivent être ASCII, et la longueur fixe fait correspondre l'ordre lexicographique de l'ART à l'ordre chronologique — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
 | `global_id_counter` | `u64` | un seul compteur partagé user/channel/message (cf. section IDs plus bas) ; clé OxidArt (`id_counter`, `incr`), persisté par le snapshot comme le reste |
 
 ### Flows

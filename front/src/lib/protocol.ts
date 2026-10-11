@@ -29,6 +29,10 @@ export function createChannel(name: string): ClientEnvelopeShape {
   return { payload: "createChannel", createChannel: { name } };
 }
 
+export function sendMessage(channelId: number, content: string): ClientEnvelopeShape {
+  return { payload: "sendMessage", sendMessage: { channelId, content } };
+}
+
 /**
  * Sous-ensemble de l'API WebSocket dont ProtocolClient a besoin — le DOM (navigateur)
  * et le paquet npm `ws` (Node) l'implémentent tous les deux, ce qui permet au même

@@ -1,9 +1,9 @@
 // Page de debug (zéro CSS) : RequestMagicLink → token copié depuis les logs serveur →
-// AuthRequest → CreateChannel, réponses et broadcasts reçus bruts. Accessible sur
+// AuthRequest → CreateChannel / SendMessage, réponses et broadcasts reçus bruts. Accessible sur
 // /debug (ouvrir deux onglets pour voir un broadcast passer de l'un à l'autre).
 
 import { useRef, useState } from "react"
-import { ProtocolClient, authRequest, createChannel, requestMagicLink } from "@/lib/protocol"
+import { ProtocolClient, authRequest, createChannel, requestMagicLink, sendMessage } from "@/lib/protocol"
 
 const BACK_END_URL = "wss://127.0.0.1:8443"
 
@@ -25,6 +25,8 @@ export function AuthDebug() {
   const [email, setEmail] = useState("")
   const [token, setToken] = useState("")
   const [channelName, setChannelName] = useState("")
+  const [channelId, setChannelId] = useState("")
+  const [content, setContent] = useState("")
   const [output, setOutput] = useState("")
   const [events, setEvents] = useState<string[]>([])
   // L'auth est liée à la connexion WS (story 33) : une seule connexion réutilisée
@@ -78,6 +80,17 @@ export function AuthDebug() {
           placeholder="nom du salon"
         />
         <button type="submit">CreateChannel</button>
+      </form>
+
+      <form onSubmit={(e) => { e.preventDefault(); void send(sendMessage(Number(channelId), content)) }}>
+        <input
+          value={channelId}
+          onChange={(e) => setChannelId(e.target.value)}
+          placeholder="id du salon"
+          size={8}
+        />
+        <input value={content} onChange={(e) => setContent(e.target.value)} placeholder="message" />
+        <button type="submit">SendMessage</button>
       </form>
 
       <pre>{output}</pre>

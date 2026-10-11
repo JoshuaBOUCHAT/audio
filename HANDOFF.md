@@ -72,6 +72,15 @@ supprimer une fois le flow d'auth mergé.
   SIGINT/SIGTERM (second signal : sortie sans save). Copie allégée de
   `resp_cmd/bgsave.rs`/`shutdown.rs` de radixox — à remonter dans oxidart si les deux
   projets doivent partager ce code.
-- **BGSAVE périodique** pas encore fait : un crash / `kill -9` perd tout depuis le
-  dernier démarrage, seul l'arrêt propre sauve.
+- ~~Save périodique~~ (fait 2026-10-11) : `SAVE` bloquante toutes les 10 s si un
+  drapeau `dirty` est levé (oxidart ne compte pas les modifications). Le fsync fige
+  le serveur le temps de l'écriture — à remplacer par la BGSAVE d'oxidart si elle
+  passe un jour du binaire radixox à la lib.
+- ~~SendMessage~~ (fait 2026-10-11) : 401 / 400 (vide) / 404 (salon inconnu) / 400
+  (DM refusés tant que la livraison ciblée n'existe pas) ; `NewMessage` en réponse +
+  broadcast. Clés `message:{ch}:{id}` avec id en base64 trié sur 6 caractères
+  (`keys.rs`).
+- **SyncRequest / DeleteMessage** : à faire. Problème ouvert sur la sync des
+  suppressions (story 15) : un tombstone d'un message d'id ≤ `last_seen_id` n'est
+  pas renvoyé par le filtre `id > last_seen_id`.
 - Pas de broadcast/diffusion : hors scope de ce ticket.

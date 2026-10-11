@@ -1,14 +1,18 @@
 //! Persistance v1 = snapshot oxidart only (CLAUDE.md § Résilience) : reload du dump au
-//! démarrage, `SAVE` bloquante sur SIGINT/SIGTERM. Version allégée (sans zstd) de
+//! démarrage, `SAVE` bloquante périodique (si quelque chose a changé) et sur
+//! SIGINT/SIGTERM. Version allégée (sans zstd) de
 //! `resp_cmd/bgsave.rs` + `resp_cmd/shutdown.rs` du binaire radixox — oxidart n'expose
 //! que les briques (`save_start`/`save_step`/`finish_save`, `format::footer`,
 //! `load_file`), pas la gestion de fichier.
 //!
-//! Pas encore de BGSAVE périodique : un crash (pas un arrêt propre) perd tout ce qui a
-//! été écrit depuis le démarrage.
+//! La save périodique est la `SAVE` bloquante (fsync compris) faute de BGSAVE exposée
+//! par la lib oxidart : le serveur est figé le temps de l'écriture. À remplacer par la
+//! BGSAVE d'oxidart si elle passe un jour du binaire radixox à la lib.
 
+use std::cell::Cell;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -21,6 +25,8 @@ const TMP_NAME: &str = "dump.rxd.tmp";
 const CHUNK: usize = 8 << 20;
 /// Budget d'un pas de DFS (seulement pour borner le buffer, la save ne rend jamais la main).
 const STEP_BUDGET: u32 = 1 << 16;
+/// Perte maximale sur crash : ce qui a changé depuis la dernière save.
+const SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// `AUDIO_DATA_DIR`, défaut `./data` (architecture.md § Déploiement).
 fn data_dir() -> PathBuf {
@@ -105,6 +111,28 @@ pub fn save_sync(art: &SharedArt) -> io::Result<u64> {
         let _ = std::fs::remove_file(&tmp);
     }
     res
+}
+
+/// Toutes les `SAVE_INTERVAL`, `SAVE` si `dirty` est levé. Le drapeau est baissé
+/// avant la save (aucun `.await` entre les deux, donc aucune mutation perdue) et
+/// relevé si elle échoue.
+pub fn install_periodic_save(art: SharedArt, dirty: Rc<Cell<bool>>) {
+    monoio::spawn(async move {
+        loop {
+            monoio::time::sleep(SAVE_INTERVAL).await;
+            if !dirty.replace(false) {
+                continue;
+            }
+            let start = Instant::now();
+            match save_sync(&art) {
+                Ok(bytes) => println!("[save] {bytes} octets en {:?}", start.elapsed()),
+                Err(e) => {
+                    eprintln!("[save] échec : {e}");
+                    dirty.set(true);
+                }
+            }
+        }
+    });
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);

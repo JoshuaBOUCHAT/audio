@@ -60,3 +60,24 @@ pub fn validate_create_channel(
         name: name.to_string(),
     })
 }
+
+/// Story 10 : un message vide (ou fait uniquement d'espaces) n'a rien à afficher.
+/// Le contenu n'est pas trimé (les espaces peuvent compter dans un message) et n'a pas
+/// de taille max en v1 (CLAUDE.md § garde-fous hors scope).
+pub struct ValidSendMessage {
+    pub channel_id: u64,
+    pub content: String,
+}
+
+pub fn validate_send_message(raw: proto::SendMessage) -> Result<ValidSendMessage, proto::Error> {
+    if raw.content.trim().is_empty() {
+        return Err(proto::Error {
+            code: 400,
+            message: "message vide".to_string(),
+        });
+    }
+    Ok(ValidSendMessage {
+        channel_id: raw.channel_id,
+        content: raw.content,
+    })
+}

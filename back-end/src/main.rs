@@ -1,12 +1,15 @@
 mod email;
+mod keys;
 mod persist;
 mod proto;
 mod registry;
 mod validate;
 
+use std::cell::Cell;
 use std::env;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::digest::{digest, SHA1_FOR_LEGACY_USE_ONLY};
 use base64::Engine;
@@ -39,6 +42,9 @@ struct AppState {
     art: SharedArt,
     bootstrap_admin_email: Option<Email>,
     registry: SharedRegistry,
+    /// Levé par chaque mutation métier, remis à zéro par la save périodique
+    /// (oxidart ne compte pas les modifications).
+    dirty: Rc<Cell<bool>>,
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -87,10 +93,13 @@ async fn main() {
     let art = OxidArt::shared_with_evictor(Duration::from_millis(100), Duration::from_secs(1));
     persist::load_at_startup(&art).expect("reload du dump");
     persist::install_shutdown(art.clone());
+    let dirty = Rc::new(Cell::new(false));
+    persist::install_periodic_save(art.clone(), dirty.clone());
     let state = AppState {
         art,
         bootstrap_admin_email,
         registry: SharedRegistry::default(),
+        dirty,
     };
 
     let listener = TcpListener::bind("127.0.0.1:8443").expect("bind :8443");
@@ -296,6 +305,24 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SendMessage(req)) => match send_message(req, state, *user_id) {
+            Ok(message) => {
+                let new_message = proto::server_envelope::Payload::NewMessage(
+                    proto::NewMessage {
+                        message: Some(message),
+                    },
+                );
+                // Story 11 : broadcast global à tous les clients authentifiés (pas
+                // d'abonnement par salon) ; l'émetteur le reçoit en réponse.
+                let event = proto::ServerEnvelope {
+                    request_id: String::new(),
+                    payload: Some(new_message.clone()),
+                };
+                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                new_message
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         _ => {
             eprintln!("[ws] type de ClientEnvelope non géré");
             return None;
@@ -381,6 +408,7 @@ fn handle_auth(
             SharedByte::from_str(&format!("session:{session_token}")),
             Value::String(SharedByte::from_str(&user.id.to_string())),
         );
+        state.dirty.set(true);
         (user, session_token)
     } else {
         let session_key = format!("session:{token}");
@@ -489,7 +517,64 @@ fn create_channel(
         SharedByte::from_str(&format!("channel:{id}")),
         Value::String(SharedByte::from_slice(encoded)),
     );
+    state.dirty.set(true);
     Ok(channel)
+}
+
+/// Story 10 : envoi dans un salon texte existant, par n'importe quel utilisateur
+/// authentifié (pas de « rejoindre », story 9). Les DM sont refusés tant que leur
+/// livraison ciblée n'existe pas : le broadcast global les montrerait à tout le monde.
+fn send_message(
+    req: proto::SendMessage,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Message, proto::Error> {
+    let user_id = user_id.ok_or_else(|| proto::Error {
+        code: 401,
+        message: "non authentifié".to_string(),
+    })?;
+    let valid = validate::validate_send_message(req)?;
+
+    let mut art = state.art.borrow_mut();
+    let channel_bytes = art
+        .get(format!("channel:{}", valid.channel_id).as_bytes())
+        .ok_or_else(|| proto::Error {
+            code: 404,
+            message: "salon inconnu".to_string(),
+        })?;
+    let channel: proto::Channel = bincode::deserialize(
+        channel_bytes.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
+    )
+    .expect("channel:{id} corrompu");
+    if channel.r#type() != proto::channel::Type::Text {
+        return Err(proto::Error {
+            code: 400,
+            message: "envoi possible uniquement dans un salon texte".to_string(),
+        });
+    }
+
+    let id = art
+        .incr(SharedByte::from_str("id_counter"))
+        .expect("id_counter jamais utilisé pour autre chose qu'un entier") as u64;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("horloge avant 1970")
+        .as_millis() as u64;
+    let message = proto::Message {
+        id,
+        channel_id: valid.channel_id,
+        user_id,
+        content: valid.content,
+        timestamp,
+        deleted: false,
+    };
+    let encoded = bincode::serialize(&message).expect("sérialisation Message");
+    art.set(
+        SharedByte::from_str(&keys::message_key(valid.channel_id, id)),
+        Value::String(SharedByte::from_slice(encoded)),
+    );
+    state.dirty.set(true);
+    Ok(message)
 }
 
 fn compute_accept(key: &str) -> String {
