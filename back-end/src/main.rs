@@ -104,6 +104,13 @@ async fn main() {
         dirty,
     };
 
+    if cfg!(debug_assertions) {
+        println!(
+            "[dev] build debug : tokens de connexion permanents 00000000-0000-0000-0000-00000000000N \
+             (N = 1..{DEV_LOGIN_TOKENS}, 1 = admin) — absents en release"
+        );
+    }
+
     let listener = TcpListener::bind("127.0.0.1:8443").expect("bind :8443");
     println!("en écoute sur https://127.0.0.1:8443 (cert auto-signé, le navigateur va alerter)");
 
@@ -393,6 +400,34 @@ fn handle_client_envelope(
     })
 }
 
+/// Nombre de tokens de connexion de dev (`dev_login_email`).
+const DEV_LOGIN_TOKENS: u128 = 9;
+
+/// **Build debug uniquement** (absent d'un `cargo build --release`) : tokens fixes
+/// `00000000-0000-0000-0000-00000000000N`, N de 1 à 9, qui se comportent comme un lien
+/// magique jamais consommé ni expiré — se connecter en dev sans aller chercher un lien
+/// dans les logs. Le token 1 est le compte admin du bootstrap (s'il est fourni), les
+/// autres `devN@dev.local`. En release le flow d'auth reste strict (CLAUDE.md
+/// § Authentification).
+#[cfg(debug_assertions)]
+fn dev_login_email(token: Uuid, state: &AppState) -> Option<Email> {
+    let n = token.as_u128();
+    if !(1..=DEV_LOGIN_TOKENS).contains(&n) {
+        return None;
+    }
+    if n == 1
+        && let Some(admin) = &state.bootstrap_admin_email
+    {
+        return Some(admin.clone());
+    }
+    Some(Email::parse(&format!("dev{n}@dev.local")).expect("email de dev valide"))
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_login_email(_token: Uuid, _state: &AppState) -> Option<Email> {
+    None
+}
+
 /// Stories 35-37 : le changement de profil est diffusé aux autres clients
 /// authentifiés ; l'auteur le reçoit en réponse.
 fn user_updated(
@@ -433,16 +468,20 @@ fn handle_auth(
     };
 
     let magic_link_key = format!("magic_link:{token}");
-    let (user, session_token) = if let Some(email_val) = art.get(magic_link_key.as_bytes()) {
-        art.del(magic_link_key.as_bytes());
-        let email_bytes = email_val
-            .as_bytes()
-            .expect("magic_link:{token} toujours stocké en Value::String");
-        let email_str = email_bytes
-            .as_str()
-            .expect("email toujours UTF-8 (garanti par Email::parse à l'écriture)");
-        let email = Email::parse(email_str).expect("email re-normalisé toujours valide");
-
+    let login_email = match art.get(magic_link_key.as_bytes()) {
+        Some(email_val) => {
+            art.del(magic_link_key.as_bytes());
+            let email_bytes = email_val
+                .as_bytes()
+                .expect("magic_link:{token} toujours stocké en Value::String");
+            let email_str = email_bytes
+                .as_str()
+                .expect("email toujours UTF-8 (garanti par Email::parse à l'écriture)");
+            Some(Email::parse(email_str).expect("email re-normalisé toujours valide"))
+        }
+        None => dev_login_email(token, state),
+    };
+    let (user, session_token) = if let Some(email) = login_email {
         let email_index_key = format!("email_index:{email}");
         let user = match art.get(email_index_key.as_bytes()) {
             Some(id_val) => {

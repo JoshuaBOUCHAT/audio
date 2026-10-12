@@ -32,6 +32,10 @@ cd front && npm run dev                   # http://localhost:5173/debug
 ```
 
 Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique pour …`).
+En build debug, connexion directe sans lien : tokens permanents
+`00000000-0000-0000-0000-00000000000N` (N = 1 à 9 ; 1 = admin du bootstrap, sinon
+`devN@dev.local`), boutons « Admin / Dev 2 / Dev 3 » sur l'écran de login de `npm run
+dev`. Compilés hors d'un build release (`#[cfg(debug_assertions)]`).
 
 ## Décisions de la session du 2026-10-11
 
