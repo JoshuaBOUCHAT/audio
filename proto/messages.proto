@@ -20,6 +20,14 @@ message User {
   uint64 avatar_version = 5; // 0 = pas de photo (story 37)
   Status status = 6;         // story 41 : choix mémorisé, jamais transmis aux autres
   string bio = 7;            // story 43 : description, vide = aucune
+  Theme theme = 8;           // story 55 : préférence privée, jamais transmise aux autres
+}
+
+// Story 55.
+enum Theme {
+  SYSTEM = 0; // suit le thème de l'OS
+  LIGHT = 1;
+  DARK = 2;
 }
 
 // Story 41 : statut choisi. « Hors ligne » n'en est pas un : c'est ce que voient les
@@ -129,6 +137,7 @@ message ClientEnvelope {
     DeleteMedia       delete_media       = 15; // story 50
     GetMedia          get_media          = 16; // story 51
     RequestDownload   request_download   = 17; // story 53
+    SetTheme          set_theme          = 18; // story 55
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -218,6 +227,11 @@ message RequestDownload {
   bool inline = 2;
 }
 
+// Story 55. Réponse : ThemeSet, aussi poussé à mes autres connexions.
+message SetTheme {
+  Theme theme = 1;
+}
+
 // Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
 // suite (story 41).
 message SetStatus {
@@ -266,6 +280,7 @@ message ServerEnvelope {
     MediaDeleted    media_deleted     = 15;
     MediaInfo       media_info        = 16;
     DownloadTicket  download_ticket   = 17;
+    ThemeSet        theme_set         = 18;
   }
 }
 
@@ -327,6 +342,11 @@ message UserUpdated {
 // participants (story 29).
 message DmOpened {
   Conversation conversation = 1;
+}
+
+// Story 55 : thème choisi, à l'auteur et à ses autres connexions seulement.
+message ThemeSet {
+  Theme theme = 1;
 }
 
 // Ack de SetStatus, à l'auteur seul (le statut n'est jamais transmis aux autres).

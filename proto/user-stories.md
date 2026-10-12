@@ -248,6 +248,16 @@ Ajoutées le 2026-10-12 (51-53), dans la continuité des images (§ Images).
     vidéo en pause ne coupe pas). Format que le navigateur ne sait pas lire (HEVC,
     certains MKV) : retour à la carte fichier avec téléchargement.
 
+### Apparence
+
+55. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux choisir un thème
+    **Système** (suit mon OS, par défaut), **Clair** ou **Sombre**, et le retrouver
+    sur tous mes appareils.
+    **Décisions** : choix mémorisé avec le compte (`User.theme`), jamais transmis aux
+    autres ; un changement est poussé à mes autres connexions (onglets, appareils) qui
+    basculent en direct. Copie locale du dernier thème, appliquée avant le chargement
+    de l'app : pas d'écran blanc furtif au démarrage en sombre.
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.
