@@ -12,8 +12,7 @@ import {
   sendMessage,
   syncRequest,
 } from "@/lib/protocol"
-
-const BACK_END_URL = "wss://127.0.0.1:8443"
+import { BACK_END_URL } from "@/lib/config"
 
 type Connection = { socket: WebSocket; client: ProtocolClient }
 

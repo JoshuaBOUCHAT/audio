@@ -48,21 +48,33 @@ Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique
 - Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
 - Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
 
-## Prochaine étape — le vrai client front
+## Client front (2026-10-12) — fonctionnel, pas encore relu visuellement
 
-React + Vite + Tailwind + shadcn (`front/`), en réutilisant `src/lib/protocol.ts`
-(`ProtocolClient`, helpers de requêtes, `onEvent` pour les broadcasts) :
+`front/src/chat/` sur `/` (la page `/debug` reste) :
 
-1. Écran de login : email → `RequestMagicLink` → saisie / lien contenant le token →
-   `AuthRequest` ; `session_token` en `localStorage`, renvoyé à l'ouverture.
-2. Liste des salons (`AuthResponse.channels` + `ChannelCreated`), création si admin.
-3. Fil d'un salon : `SyncRequest` depuis 0, `NewMessage` / `MessageDeleted` en direct,
-   envoi, suppression (bouton pour l'auteur et l'admin).
-4. Reconnexion automatique (story 17) : nouveau WS → `AuthRequest` avec le
-   `session_token` → resync depuis 0 de chaque salon ouvert.
+| Fichier | Rôle |
+|---|---|
+| `store.ts` | `ChatStore` hors React (`useSyncExternalStore`) : un WS par onglet, auth, broadcasts, reconnexion à backoff 0,5 s → 10 s (story 17) puis resync depuis 0 des salons ouverts |
+| `session.ts` | `session_token` en `localStorage` (try/catch), token de lien magique lu dans `?token=` puis retiré de l'URL |
+| `model.ts` | conversion proto → types d'affichage (`Long` → number), fusion des messages par id |
+| `Login.tsx` / `ChatView.tsx` | login (email, puis lien ou token collé) ; salons + fil + saisie, suppression au survol (auteur ou admin), création de salon (admin) |
 
-URL du back-end codée en dur (`wss://127.0.0.1:8443`) dans la page debug : à rendre
-configurable pour le vrai client.
+URL du back-end : `VITE_BACK_END_URL`, défaut `wss://127.0.0.1:8443` (`src/lib/config.ts`).
+Un token de session refusé explicitement par le serveur est effacé ; une coupure réseau
+pendant l'auth le garde.
+
+Testé : le `ChatStore` piloté sous Node (chargé par Vite) contre le vrai serveur, deux
+clients, redémarrage serveur compris. **Le rendu dans un navigateur n'a pas encore été
+vérifié** (pas d'outil navigateur dans la session) : premier point à faire.
+
+## Prochaines étapes
+
+1. Vérifier le rendu dans le navigateur, ajuster l'UI.
+2. Noms des auteurs : le protocole ne transmet que `me` ; les autres auteurs
+   s'affichent « Utilisateur #id ». Touche au protocole → user story d'abord.
+3. Le serveur logge le token seul : logger un lien complet (`…/?token=`) suppose de
+   connaître l'URL publique du front (variable d'env), à trancher avec le service des
+   fichiers statiques par le binaire.
 
 ## Limites connues du serveur (non bloquantes en local)
 

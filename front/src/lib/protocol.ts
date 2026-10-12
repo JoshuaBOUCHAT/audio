@@ -61,7 +61,10 @@ export interface WebSocketLike {
  */
 export class ProtocolClient {
   private readonly socket: WebSocketLike;
-  private readonly pending = new Map<string, (envelope: ServerEnvelope) => void>();
+  private readonly pending = new Map<
+    string,
+    { resolve: (envelope: ServerEnvelope) => void; reject: (reason: Error) => void }
+  >();
   private eventListener: ((envelope: ServerEnvelope) => void) | null = null;
 
   constructor(socket: WebSocketLike) {
@@ -73,10 +76,19 @@ export class ProtocolClient {
   request(payload: ClientEnvelopeShape): Promise<ServerEnvelope> {
     const requestId = payload.requestId ?? crypto.randomUUID();
     const bytes = encodeClientEnvelope({ ...payload, requestId });
-    return new Promise((resolve) => {
-      this.pending.set(requestId, resolve);
+    return new Promise((resolve, reject) => {
+      this.pending.set(requestId, { resolve, reject });
       this.socket.send(bytes);
     });
+  }
+
+  /**
+   * Rejette toutes les requêtes en attente. À appeler quand le socket se ferme : leurs
+   * réponses n'arriveront jamais (l'auth et l'état serveur sont liés à la connexion).
+   */
+  failPending(reason: Error): void {
+    for (const { reject } of this.pending.values()) reject(reason);
+    this.pending.clear();
   }
 
   onEvent(listener: (envelope: ServerEnvelope) => void): void {
@@ -89,9 +101,9 @@ export class ProtocolClient {
       this.eventListener?.(envelope);
       return;
     }
-    const resolve = this.pending.get(envelope.requestId);
-    if (!resolve) return;
+    const pending = this.pending.get(envelope.requestId);
+    if (!pending) return;
     this.pending.delete(envelope.requestId);
-    resolve(envelope);
+    pending.resolve(envelope);
   }
 }
