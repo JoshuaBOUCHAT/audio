@@ -54,7 +54,9 @@ export function Composer({
   const [uploading, setUploading] = useState(0)
   /** Story 62 : autocomplétion ouverte par `@`, texte tapé après et choix surligné. */
   const [suggest, setSuggest] = useState<{ query: string; index: number } | null>(null)
-  const candidates = suggest ? matchMembers(Object.values(state.users), suggest.query) : []
+  // On ne se propose pas soi-même.
+  const others = Object.values(state.users).filter((u) => u.id !== state.me?.id)
+  const candidates = suggest ? matchMembers(others, suggest.query) : []
 
   const refresh = () => {
     const el = editor.current
