@@ -143,7 +143,7 @@ export function Composer({
     for (const file of files) {
       const chip = createChip(null)
       if (file.type.startsWith("image/")) renderImage(chip, URL.createObjectURL(file), true)
-      else renderFile(chip, { name: file.name, detail: "Envoi…", folder: false })
+      else renderFile(chip, { name: file.name, detail: "Envoi…", folder: false, video: file.type.startsWith("video/") })
       insertNode(chip)
       setUploading((n) => n + 1)
       upload(chip, file, { name: file.name || "fichier" }, (ratio) => {
@@ -314,7 +314,7 @@ function renderInfo(chip: HTMLElement, info: MediaInfo, url: string | undefined)
     const detail = info.folderFiles
       ? `${info.folderFiles} fichiers · ${formatBytes(info.folderSize)}`
       : formatBytes(info.size)
-    renderFile(chip, { name: info.name, detail, folder: info.folderFiles > 0 })
+    renderFile(chip, { name: info.name, detail, folder: info.folderFiles > 0, video: info.isVideo })
   }
 }
 
@@ -336,16 +336,16 @@ function renderImage(chip: HTMLElement, url: string, uploading: boolean) {
   }
 }
 
-function renderFile(chip: HTMLElement, file: { name: string; detail: string; folder: boolean }) {
+function renderFile(chip: HTMLElement, file: { name: string; detail: string; folder: boolean; video?: boolean }) {
   const body = chip.querySelector<HTMLElement>("[data-body]")!
-  const view = `file:${file.name}:${file.detail}:${file.folder}`
+  const view = `file:${file.name}:${file.detail}:${file.folder}:${file.video}`
   if (body.dataset.view === view) return
   body.dataset.view = view
   const card = document.createElement("span")
   card.className = "inline-flex max-w-64 items-center gap-2 rounded-md border bg-muted px-2.5 py-1.5 text-xs"
   const icon = document.createElement("span")
   icon.className = "text-lg leading-none"
-  icon.textContent = file.folder ? "🗂️" : "📄"
+  icon.textContent = file.folder ? "🗂️" : file.video ? "🎬" : "📄"
   const text = document.createElement("span")
   text.className = "min-w-0"
   const name = document.createElement("span")

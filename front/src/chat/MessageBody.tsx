@@ -1,10 +1,10 @@
-// Corps d'un message (stories 27, 51-52) : texte, images et fichiers dans l'ordre où ils
-// ont été écrits. Une image s'affiche (clic : vue en grand, story 49), un fichier ou un
-// dossier est une carte (nom, taille). Actions : copier le lien (story 46), télécharger
+// Corps d'un message (stories 27, 51-52, 54) : texte, images, vidéos et fichiers dans
+// l'ordre où ils ont été écrits. Une image s'affiche (clic : vue en grand, story 49),
+// une vidéo se lit sur place, un fichier ou un dossier est une carte (nom, taille). Actions : copier le lien (story 46), télécharger
 // (ticket, story 53), supprimer ici ou pour tout le monde (story 50).
 
-import { useEffect, useState } from "react"
-import { Download, File as FileIcon, FileX, FolderArchive, Link, Trash2, X } from "lucide-react"
+import { useEffect, useState, type ReactNode } from "react"
+import { Download, File as FileIcon, FileX, Film, FolderArchive, Link, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatBytes, shareLink, splitContent, withoutMedia } from "./media"
@@ -102,6 +102,9 @@ function MediaPart({
       )}
     </span>
   )
+  if (entry?.status === "ready" && entry.info.isVideo) {
+    return <VideoPart id={id} url={entry.url} info={entry.info} store={store} actions={actions} />
+  }
   if (entry?.status === "ready" && !entry.info.isImage) {
     return (
       <span className="group/media relative my-1 inline-flex max-w-full items-center gap-3 rounded-lg border bg-muted/50 py-2 pr-2 pl-3 align-bottom whitespace-normal">
@@ -126,10 +129,65 @@ function MediaPart({
   )
 }
 
+/**
+ * Story 54 : lecteur intégré. Le navigateur lit par plages avec le ticket de lecture ;
+ * à la première erreur le ticket est renouvelé (expiré si l'onglet est resté ouvert
+ * longtemps), à la seconde c'est le format qui n'est pas lisible ici : carte fichier.
+ */
+function VideoPart({
+  id,
+  url,
+  info,
+  store,
+  actions,
+}: {
+  id: string
+  url: string | undefined
+  info: MediaInfo
+  store: ChatStore
+  actions: ReactNode
+}) {
+  const [retried, setRetried] = useState(false)
+  const [unplayable, setUnplayable] = useState(false)
+  if (unplayable) {
+    return (
+      <span className="group/media relative my-1 inline-flex max-w-full items-center gap-3 rounded-lg border bg-muted/50 py-2 pr-2 pl-3 align-bottom whitespace-normal">
+        <FileCard info={info} />
+        <span className="text-xs text-muted-foreground">format non lisible ici</span>
+        <Button variant="secondary" size="icon-sm" onClick={() => void store.download(id)} title="Télécharger">
+          <Download />
+        </Button>
+        <span className="absolute -top-3 right-1.5">{actions}</span>
+      </span>
+    )
+  }
+  if (!url) return <span className="my-1 inline-block h-48 w-80 animate-pulse rounded-lg bg-muted align-bottom" />
+  return (
+    <span className="group/media relative my-1 inline-block align-bottom">
+      <video
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="max-h-80 max-w-[min(100%,28rem)] rounded-lg border bg-black"
+        onError={() => {
+          if (!retried && !url.startsWith("blob:")) {
+            setRetried(true)
+            void store.refreshStream(id)
+          } else {
+            setUnplayable(true)
+          }
+        }}
+      />
+      <span className="absolute top-1.5 right-1.5">{actions}</span>
+    </span>
+  )
+}
+
 /** Story 52 : un dossier montre son nombre de fichiers et sa taille d'origine. */
 function FileCard({ info }: { info: MediaInfo }) {
   const folder = info.folderFiles > 0
-  const Icon = folder ? FolderArchive : FileIcon
+  const Icon = folder ? FolderArchive : info.isVideo ? Film : FileIcon
   return (
     <>
       <Icon className="size-8 shrink-0 text-muted-foreground" />

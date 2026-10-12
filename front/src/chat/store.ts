@@ -58,7 +58,10 @@ export type Phase =
 
 export type MediaEntry =
   | { status: "loading" }
-  /** Métadonnées connues ; `url` : contenu chargé (images seulement, story 27). */
+  /**
+   * Métadonnées connues ; `url` : image chargée (story 27) ou adresse de lecture d'une
+   * vidéo (ticket, story 54) — jamais pour un fichier.
+   */
   | { status: "ready"; info: MediaInfo; url?: string }
   /** Supprimé pour tout le monde (story 50) ou inconnu. */
   | { status: "missing" }
@@ -287,7 +290,7 @@ export class ChatStore {
     clearSessionToken()
     this.sessionToken = null
     for (const entry of Object.values(this.state.media)) {
-      if (entry.status === "ready" && entry.url) URL.revokeObjectURL(entry.url)
+      if (entry.status === "ready" && entry.url?.startsWith("blob:")) URL.revokeObjectURL(entry.url)
     }
     for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
     // La connexion reste authentifiée côté serveur : on repart d'un WS vierge.
@@ -424,7 +427,8 @@ export class ChatStore {
         this.setMedia(info.id, {
           status: "ready",
           info,
-          url: info.isImage ? URL.createObjectURL(file) : undefined,
+          // Image ou vidéo qu'on vient d'envoyer : lue depuis le fichier local.
+          url: info.isImage || info.isVideo ? URL.createObjectURL(file) : undefined,
         })
         resolve(info)
       }
@@ -460,6 +464,7 @@ export class ChatStore {
       else {
         this.setMedia(id, { status: "ready", info })
         if (info.isImage) void this.loadImage(info)
+        if (info.isVideo) void this.refreshStream(id)
       }
     }
   }
@@ -476,6 +481,19 @@ export class ChatStore {
     } catch {
       this.forgetMedia(info.id)
     }
+  }
+
+  /**
+   * Story 54 : adresse de lecture d'une vidéo — le lecteur du navigateur ne porte pas
+   * de token, il lit par plages avec un ticket de lecture (1 h, prolongée à chaque
+   * requête). Rappelé par le lecteur si le ticket a expiré (onglet resté ouvert).
+   */
+  refreshStream = async (id: string): Promise<void> => {
+    const response = await this.request(requestDownload(id, true))
+    const ticket = response?.downloadTicket?.ticket
+    const entry = this.state.media[id]
+    if (!ticket || entry?.status !== "ready") return
+    this.setMedia(id, { ...entry, url: `${MEDIA_BASE}/media/${id}?ticket=${ticket}` })
   }
 
   private forgetMedia(id: string): void {
@@ -508,7 +526,7 @@ export class ChatStore {
 
   private markMediaMissing(id: string): void {
     const entry = this.state.media[id]
-    if (entry?.status === "ready" && entry.url) URL.revokeObjectURL(entry.url)
+    if (entry?.status === "ready" && entry.url?.startsWith("blob:")) URL.revokeObjectURL(entry.url)
     this.setMedia(id, { status: "missing" })
   }
 
