@@ -160,7 +160,8 @@ function NotificationSettings({ state, store }: { state: ChatState; store: ChatS
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          Joué quand un message arrive dans une conversation que tu ne regardes pas.
+          Joué quand un message arrive dans une conversation que tu ne regardes pas : chaque message
+          d'un DM, seulement les mentions de toi (@) dans un salon.
         </p>
       </section>
 

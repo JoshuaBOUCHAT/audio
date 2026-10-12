@@ -73,15 +73,16 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     }
   }, [store])
 
-  // Story 56 : total des non-lus (conversations coupées exclues) dans le titre.
-  const channelUnread = store.unreadTotal(state.channels.map((c) => c.id))
-  const dmUnread = store.unreadTotal(state.dms.map((d) => d.id))
+  // Story 56, 62 : badges = mentions de moi pour les salons, tous les non-lus pour les
+  // DM (conversations coupées exclues) ; leur somme dans le titre.
+  const channelUnread = store.badgeTotal(state.channels.map((c) => c.id), "mentions")
+  const dmUnread = store.badgeTotal(state.dms.map((d) => d.id), "count")
   useEffect(() => {
     const total = channelUnread + dmUnread
     document.title = total > 0 ? `(${total > 99 ? "99+" : total}) ${BASE_TITLE}` : BASE_TITLE
   }, [channelUnread, dmUnread])
-  const badge = (id: number) => (
-    <UnreadBadge count={state.unread[id]?.count ?? 0} muted={state.settings.rules[id]?.muted ?? false} />
+  const badge = (id: number, kind: "mentions" | "count") => (
+    <UnreadBadge count={state.unread[id]?.[kind] ?? 0} muted={state.settings.rules[id]?.muted ?? false} />
   )
 
   // Story 28 : ouvrir un DM depuis la liste des membres bascule dessus.
@@ -135,7 +136,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   <span className={cn("truncate", (state.unread[c.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
                     {c.name}
                   </span>
-                  {badge(c.id)}
+                  {badge(c.id, "mentions")}
                 </button>
               ))}
               {state.channels.length === 0 && (
@@ -160,7 +161,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   <span className={cn("truncate", (state.unread[d.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
                     {pseudoOf(d.otherId)}
                   </span>
-                  {badge(d.id)}
+                  {badge(d.id, "count")}
                 </button>
               ))}
               {dms.length === 0 && (

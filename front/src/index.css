@@ -146,3 +146,14 @@
         }
     }
 }
+
+/* Story 62 : pastille de mention, teintée par la couleur de la personne (--mention-h,
+   cf. userHue) — lisible en clair comme en sombre. */
+.mention {
+    background-color: hsl(var(--mention-h) 70% 50% / 0.16);
+    color: hsl(var(--mention-h) 60% 34%);
+}
+.dark .mention {
+    background-color: hsl(var(--mention-h) 70% 60% / 0.2);
+    color: hsl(var(--mention-h) 80% 76%);
+}

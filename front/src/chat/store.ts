@@ -55,7 +55,7 @@ import {
 } from "./model"
 import { applyTheme, type ThemeChoice } from "@/lib/theme"
 import { chat } from "@/proto/messages.js"
-import { plainText } from "./media"
+import { mentions, plainText } from "./media"
 import { playSound } from "./sounds"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
 
@@ -89,8 +89,8 @@ export type ChatState = {
   online: ReadonlySet<number>
   /** Images (story 27) chargées ou en cours, par id. */
   media: Record<string, MediaEntry>
-  /** Story 56 : non-lus par conversation (salon ou DM). */
-  unread: Record<number, { count: number; lastReadId: number }>
+  /** Story 56 : non-lus par conversation (salon ou DM) ; story 62 : dont mentions de moi. */
+  unread: Record<number, { count: number; mentions: number; lastReadId: number }>
   /** Stories 57-60. */
   settings: NotifySettings
   /** Confirmation brève (« Lien copié »), effacée seule. */
@@ -302,7 +302,11 @@ export class ChatStore {
 
     const unread: ChatState["unread"] = {}
     for (const u of auth.unread ?? []) {
-      unread[toNumber(u.channelId)] = { count: u.count ?? 0, lastReadId: toNumber(u.lastReadId) }
+      unread[toNumber(u.channelId)] = {
+        count: u.count ?? 0,
+        mentions: u.mentions ?? 0,
+        lastReadId: toNumber(u.lastReadId),
+      }
     }
     this.set({
       phase: me.pseudo ? "ready" : "pseudo",
@@ -588,13 +592,17 @@ export class ChatStore {
     const last = messages.at(-1)?.id ?? 0
     const current = this.state.unread[id]
     if (last === 0 || (current && current.count === 0 && current.lastReadId >= last)) return
-    this.set({ unread: { ...this.state.unread, [id]: { count: 0, lastReadId: Math.max(last, current?.lastReadId ?? 0) } } })
+    const lastReadId = Math.max(last, current?.lastReadId ?? 0)
+    this.set({ unread: { ...this.state.unread, [id]: { count: 0, mentions: 0, lastReadId } } })
     void this.request(markRead(id, last))
   }
 
-  /** Total des non-lus, salons ou DM — conversations coupées exclues. */
-  unreadTotal = (ids: number[]): number =>
-    ids.reduce((n, id) => n + (this.state.settings.rules[id]?.muted ? 0 : (this.state.unread[id]?.count ?? 0)), 0)
+  /**
+   * Total affiché en badge, conversations coupées exclues : les mentions de moi pour les
+   * salons (story 62), tous les non-lus pour les DM.
+   */
+  badgeTotal = (ids: number[], kind: "mentions" | "count"): number =>
+    ids.reduce((n, id) => n + (this.state.settings.rules[id]?.muted ? 0 : (this.state.unread[id]?.[kind] ?? 0)), 0)
 
   setNotifySettings = async (settings: NotifySettings): Promise<void> => {
     this.set({ settings })
@@ -623,12 +631,21 @@ export class ChatStore {
       this.markActiveRead()
       return
     }
-    const current = this.state.unread[id] ?? { count: 0, lastReadId: 0 }
+    const mentioned = mentions(message.content, me.id)
+    const current = this.state.unread[id] ?? { count: 0, mentions: 0, lastReadId: 0 }
     if (message.id > current.lastReadId) {
-      this.set({ unread: { ...this.state.unread, [id]: { ...current, count: Math.min(current.count + 1, 100) } } })
+      const next = {
+        ...current,
+        count: Math.min(current.count + 1, 100),
+        mentions: Math.min(current.mentions + (mentioned ? 1 : 0), 100),
+      }
+      this.set({ unread: { ...this.state.unread, [id]: next } })
     }
     const rule = this.state.settings.rules[id]
     if (rule?.muted) return
+    // Story 62 : un salon ne notifie que sur mention de moi ; un DM, toujours.
+    const isDm = this.state.dms.some((d) => d.id === id)
+    if (!isDm && !mentioned) return
     const { sound, desktop } = this.state.settings
     if (sound && !rule?.silent && Date.now() - this.lastSound > 1000) {
       this.lastSound = Date.now()
@@ -643,7 +660,10 @@ export class ChatStore {
     const author = this.state.users[message.userId]?.pseudo ?? "Quelqu'un"
     const channel = this.state.channels.find((c) => c.id === message.channelId)
     const notification = new Notification(channel ? `${author} dans #${channel.name}` : author, {
-      body: plainText(message.content).replace(/\s+/g, " ").trim().slice(0, 200),
+      body: plainText(message.content, (userId) => this.state.users[userId]?.pseudo ?? "quelqu'un")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 200),
       tag: `conversation-${message.channelId}`,
       silent: true, // le son vient de l'app, réglable (story 57)
     })
@@ -754,8 +774,10 @@ export class ChatStore {
         if (!marked) break
         const id = toNumber(marked.channelId)
         const lastReadId = toNumber(marked.lastReadId)
-        const after = (this.state.messages[id] ?? []).filter((m) => m.id > lastReadId && m.userId !== this.state.me?.id && !m.deleted)
-        this.set({ unread: { ...this.state.unread, [id]: { count: after.length, lastReadId } } })
+        const me = this.state.me
+        const after = (this.state.messages[id] ?? []).filter((m) => m.id > lastReadId && m.userId !== me?.id && !m.deleted)
+        const mentioned = after.filter((m) => me && mentions(m.content, me.id)).length
+        this.set({ unread: { ...this.state.unread, [id]: { count: after.length, mentions: mentioned, lastReadId } } })
         break
       }
       case "settingsSet":

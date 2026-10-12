@@ -32,8 +32,11 @@ pub fn last_read(art: &mut OxidArt, user_id: u64, channel_id: u64) -> u64 {
 }
 
 /// Story 56 : messages des autres, non supprimés, après le dernier lu — plafonné.
+/// Story 62 : parmi eux, ceux qui me mentionnent (`<@{moi}>`).
 pub fn unread(art: &mut OxidArt, user_id: u64, channel_id: u64) -> proto::Unread {
     let last_read_id = last_read(art, user_id, channel_id);
+    let mention = format!("<@{user_id}>");
+    let mut mentions = 0;
     let prefix = keys::message_prefix(channel_id);
     let mut from = if last_read_id == 0 {
         Vec::new()
@@ -53,6 +56,9 @@ pub fn unread(art: &mut OxidArt, user_id: u64, channel_id: u64) -> proto::Unread
             let message: proto::Message = codec::decode(bytes.as_slice(), "message");
             if message.user_id != user_id && !message.deleted {
                 count += 1;
+                if message.content.contains(&mention) {
+                    mentions += 1;
+                }
                 if count == MAX_UNREAD {
                     break 'pages;
                 }
@@ -67,6 +73,7 @@ pub fn unread(art: &mut OxidArt, user_id: u64, channel_id: u64) -> proto::Unread
         channel_id,
         last_read_id,
         count,
+        mentions,
     }
 }
 
@@ -155,6 +162,31 @@ mod tests {
         assert_eq!(unread(&mut art, 1, 2).count, 2);
         assert_eq!(mark_read(&mut art, 1, 2, 11), 13, "le marqueur ne recule pas");
         assert_eq!(unread(&mut art, 1, 2).last_read_id, 13);
+    }
+
+    #[test]
+    fn mentions_non_lues() {
+        let mut art = OxidArt::new();
+        for (id, content) in [(1, "salut <@1>"), (2, "<@12> pas moi"), (3, "<@1> et <@1>"), (4, "rien")] {
+            let m = proto::Message {
+                id,
+                channel_id: 2,
+                user_id: 7,
+                content: content.into(),
+                timestamp: 0,
+                deleted: false,
+                reply_to_id: 0,
+                edited_at: 0,
+            };
+            art.set(
+                SharedByte::from_str(&keys::message_key(2, id)),
+                Value::String(SharedByte::from_slice(codec::encode(&m))),
+            );
+        }
+        let u = unread(&mut art, 1, 2);
+        assert_eq!((u.count, u.mentions), (4, 2), "<@12> n'est pas une mention de <@1>");
+        mark_read(&mut art, 1, 2, 1);
+        assert_eq!(unread(&mut art, 1, 2).mentions, 1);
     }
 
     #[test]

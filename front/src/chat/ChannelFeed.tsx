@@ -10,7 +10,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
 import { Composer, type ComposerHandle } from "./Composer"
-import { plainText } from "./media"
+import { mentions, plainText } from "./media"
 import { MessageBody } from "./MessageBody"
 import { foldersFromInput } from "./zip-folder"
 import type { ChatMessage } from "./model"
@@ -120,6 +120,7 @@ export function ChannelFeed({
               previous !== undefined && previous.userId === m.userId && !previous.deleted && m.replyToId === 0
             const isMine = m.userId === me.id
             const targeted = mode.kind !== "new" && mode.target.id === m.id
+            const mentionsMe = !m.deleted && mentions(m.content, me.id)
             return (
               <div
                 key={m.id}
@@ -127,6 +128,7 @@ export function ChannelFeed({
                 className={cn(
                   "group relative py-0.5 pr-24 pl-16 hover:bg-muted/50",
                   !grouped && "mt-3",
+                  mentionsMe && "bg-amber-400/10 shadow-[inset_2px_0_0_var(--color-amber-500)] hover:bg-amber-400/15",
                   targeted && "bg-primary/5 shadow-[inset_2px_0_0_var(--primary)]",
                 )}
               >
@@ -211,7 +213,7 @@ export function ChannelFeed({
                 <CornerUpRight className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 truncate">
                   Réponse à <span className="font-semibold">{pseudoOf(mode.target.userId)}</span>
-                  <span className="ml-1.5 text-muted-foreground">{excerpt(mode.target)}</span>
+                  <span className="ml-1.5 text-muted-foreground">{excerpt(mode.target, pseudoOf)}</span>
                 </span>
               </>
             ) : (
@@ -352,7 +354,7 @@ function ReplyQuote({
       <CornerUpRight className="size-3.5 shrink-0" />
       <Avatar userId={target.userId} state={state} store={store} className="size-4 text-[0.55rem]" />
       <span className="shrink-0 font-semibold">{pseudoOf(target.userId)}</span>
-      <span className={cn("truncate", target.deleted && "italic")}>{excerpt(target)}</span>
+      <span className={cn("truncate", target.deleted && "italic")}>{excerpt(target, pseudoOf)}</span>
     </button>
   )
 }
@@ -402,9 +404,9 @@ function ConfirmDelete({
   )
 }
 
-function excerpt(message: ChatMessage): string {
+function excerpt(message: ChatMessage, pseudoOf: (userId: number) => string): string {
   if (message.deleted) return "message supprimé"
-  const text = plainText(message.content).replace(/\s+/g, " ").trim()
+  const text = plainText(message.content, pseudoOf).replace(/\s+/g, " ").trim()
   return text.length > 100 ? `${text.slice(0, 100)}…` : text
 }
 

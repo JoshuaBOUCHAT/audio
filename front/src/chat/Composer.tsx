@@ -1,5 +1,6 @@
-// Barre de saisie riche (stories 27, 45, 51-52) : texte, images, fichiers et dossiers
-// librement mélangés, dans l'ordre où on les place. Chacun est une miniature insérée
+// Barre de saisie riche (stories 27, 45, 51-52, 62) : texte, images, fichiers, dossiers
+// et mentions librement mélangés, dans l'ordre où on les place. `@` ouvre une
+// autocomplétion des membres ; la personne choisie devient une pastille. Chacun est une miniature insérée
 // au curseur (bouton, Ctrl+V, glisser-déposer, ou lien `/media/…` collé, story 46) —
 // une image en vignette, un fichier ou un dossier en carte ; le contenu se lit comme
 // le texte du message, chaque média y devenant son lien.
@@ -10,8 +11,9 @@
 
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react"
 import { cn } from "@/lib/utils"
-import { formatBytes, mediaToken, splitContent } from "./media"
-import type { MediaInfo } from "./model"
+import { Avatar } from "./Avatar"
+import { formatBytes, mediaToken, mentionToken, splitContent, type Part } from "./media"
+import { userColor, userHue, type MediaInfo, type Profile } from "./model"
 import type { ChatState, ChatStore } from "./store"
 import { folderSize, readDropped, zipFolder, type Folder } from "./zip-folder"
 
@@ -50,12 +52,47 @@ export function Composer({
   const savedRange = useRef<Range | null>(null)
   const [empty, setEmpty] = useState(true)
   const [uploading, setUploading] = useState(0)
+  /** Story 62 : autocomplétion ouverte par `@`, texte tapé après et choix surligné. */
+  const [suggest, setSuggest] = useState<{ query: string; index: number } | null>(null)
+  const candidates = suggest ? matchMembers(Object.values(state.users), suggest.query) : []
 
   const refresh = () => {
     const el = editor.current
     if (!el) return
     fixTrailingNewline(el)
     setEmpty(isEmpty(el))
+    detectMention()
+  }
+
+  /** `@` + quelques caractères juste avant le curseur, en début de mot. */
+  function detectMention() {
+    const selection = window.getSelection()
+    const node = selection?.anchorNode
+    if (!selection?.isCollapsed || !node || node.nodeType !== Node.TEXT_NODE || !editor.current?.contains(node)) {
+      setSuggest(null)
+      return
+    }
+    const before = (node as Text).data.slice(0, selection.anchorOffset)
+    const match = /(?:^|[\s\u00a0])@([^\s@]{0,32})$/.exec(before)
+    setSuggest((current) => (match ? { query: match[1], index: current?.query === match[1] ? current.index : 0 } : null))
+  }
+
+  /** Remplace `@texte` par la pastille de la personne, suivie d'une espace. */
+  function selectMention(user: Profile) {
+    const selection = window.getSelection()
+    const node = selection?.anchorNode
+    if (!selection || !node || node.nodeType !== Node.TEXT_NODE || !suggest) return
+    const end = selection.anchorOffset
+    const range = document.createRange()
+    range.setStart(node, end - suggest.query.length - 1)
+    range.setEnd(node, end)
+    range.deleteContents()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    insertNode(createMention(user.id))
+    insertText(" ")
+    setSuggest(null)
+    refresh()
   }
 
   // Dernière position du curseur dans l'éditeur : le bouton d'ajout d'image lui prend
@@ -84,6 +121,11 @@ export function Composer({
       else if (entry.status === "ready") renderInfo(chip, entry.info, entry.url)
       chip.classList.toggle("opacity-40", entry?.status === "missing")
     }
+    for (const chip of el.querySelectorAll<HTMLElement>("[data-mention-id]")) {
+      const userId = Number(chip.dataset.mentionId)
+      if (state.users[userId]?.avatarVersion) store.ensureAvatar(userId)
+      renderMention(chip, state.users[userId]?.pseudo ?? "inconnu", state.avatars[userId]?.url)
+    }
   })
 
   function insertNode(node: Node) {
@@ -110,11 +152,9 @@ export function Composer({
     insertNode(document.createTextNode(text))
   }
 
-  /** Texte collé : les liens d'images deviennent des miniatures (story 46). */
+  /** Texte collé : liens de médias et mentions deviennent des pastilles (stories 46, 62). */
   function insertContent(content: string) {
-    for (const part of splitContent(content)) {
-      insertNode(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id))
-    }
+    for (const part of splitContent(content)) insertNode(partNode(part))
     refresh()
   }
 
@@ -196,7 +236,7 @@ export function Composer({
       if (!el) return
       el.replaceChildren()
       for (const part of splitContent(content)) {
-        el.append(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id))
+        el.append(partNode(part))
       }
       refresh()
       placeCaretAtEnd(el)
@@ -214,6 +254,34 @@ export function Composer({
 
   return (
     <div className="relative">
+      {suggest && candidates.length > 0 && (
+        <ul
+          role="listbox"
+          aria-label="Mentionner"
+          className="absolute bottom-full left-0 z-10 mb-2 w-64 overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg"
+        >
+          {candidates.map((user, i) => (
+            <li
+              key={user.id}
+              role="option"
+              aria-selected={i === suggest.index}
+              // mousedown : choisir sans faire perdre le focus (donc le curseur) à l'éditeur.
+              onMouseDown={(e) => {
+                e.preventDefault()
+                selectMention(user)
+              }}
+              onMouseEnter={() => setSuggest({ ...suggest, index: i })}
+              className={cn(
+                "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+                i === suggest.index && "bg-muted",
+              )}
+            >
+              <Avatar userId={user.id} state={state} store={store} className="size-6 text-xs" />
+              <span className="truncate">{user.pseudo}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {empty && (
         <div className="pointer-events-none absolute top-0 left-0 px-2.5 py-2 text-sm text-muted-foreground select-none">
           {placeholder}
@@ -233,6 +301,25 @@ export function Composer({
         )}
         onInput={refresh}
         onKeyDown={(e) => {
+          // Autocomplétion ouverte : elle prend les flèches, Entrée, Tab et Échap.
+          if (suggest && candidates.length > 0) {
+            const move = { ArrowDown: 1, ArrowUp: -1 }[e.key as "ArrowDown" | "ArrowUp"]
+            if (move) {
+              e.preventDefault()
+              setSuggest({ ...suggest, index: (suggest.index + move + candidates.length) % candidates.length })
+              return
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+              e.preventDefault()
+              selectMention(candidates[suggest.index] ?? candidates[0])
+              return
+            }
+            if (e.key === "Escape") {
+              e.preventDefault()
+              setSuggest(null)
+              return
+            }
+          }
           onKeyDown?.(e, isEmpty(e.currentTarget))
           if (e.defaultPrevented || e.key !== "Enter" || e.nativeEvent.isComposing) return
           e.preventDefault()
@@ -271,6 +358,10 @@ export function Composer({
             insertFolders(folders)
           })
         }}
+        onKeyUp={(e) => {
+          if (e.key.startsWith("Arrow") && !suggest) detectMention()
+        }}
+        onBlur={() => setSuggest(null)}
         onClick={(e) => {
           // Croix d'une miniature : retire l'image du message en cours.
           const remove = (e.target as HTMLElement).closest("[data-remove]")
@@ -380,6 +471,54 @@ function percent(ratio: number): string {
   return `${Math.floor(ratio * 100)} %`
 }
 
+function partNode(part: Part): Node {
+  if (part.kind === "text") return document.createTextNode(part.text)
+  if (part.kind === "media") return createChip(part.id)
+  return createMention(part.userId)
+}
+
+/** Story 62 : pastille de mention non éditable — mini photo et pseudo coloré. */
+function createMention(userId: number): HTMLSpanElement {
+  const chip = document.createElement("span")
+  chip.contentEditable = "false"
+  chip.dataset.mentionId = String(userId)
+  chip.className = "mention mx-0.5 inline-flex items-center gap-1 rounded-md px-1 align-bottom font-medium"
+  chip.style.setProperty("--mention-h", String(userHue(userId)))
+  return chip
+}
+
+function renderMention(chip: HTMLElement, pseudo: string, avatarUrl: string | undefined) {
+  const view = `${pseudo}:${avatarUrl ?? ""}`
+  if (chip.dataset.view === view) return
+  chip.dataset.view = view
+  const avatar = document.createElement(avatarUrl ? "img" : "span")
+  avatar.className =
+    "inline-flex size-4 items-center justify-center rounded-full object-cover text-[0.55rem] font-semibold text-white"
+  if (avatar instanceof HTMLImageElement) {
+    avatar.src = avatarUrl!
+    avatar.alt = ""
+  } else {
+    avatar.style.backgroundColor = userColor(Number(chip.dataset.mentionId))
+    avatar.textContent = pseudo.charAt(0).toUpperCase()
+  }
+  const name = document.createElement("span")
+  name.textContent = `@${pseudo}`
+  chip.replaceChildren(avatar, name)
+}
+
+/** Insensible à la casse et aux accents ; ceux qui commencent par la saisie d'abord. */
+function matchMembers(users: Profile[], query: string): Profile[] {
+  const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
+  const q = norm(query)
+  return users
+    .filter((u) => u.pseudo && norm(u.pseudo).includes(q))
+    .sort((a, b) => {
+      const starts = Number(norm(b.pseudo).startsWith(q)) - Number(norm(a.pseudo).startsWith(q))
+      return starts || a.pseudo.localeCompare(b.pseudo, "fr", { sensitivity: "base" })
+    })
+    .slice(0, 8)
+}
+
 function serialize(root: HTMLElement): string {
   let out = ""
   const walk = (node: Node) => {
@@ -388,6 +527,7 @@ function serialize(root: HTMLElement): string {
         out += (child as Text).data
       } else if (child instanceof HTMLElement) {
         if (child.dataset.mediaId) out += mediaToken(child.dataset.mediaId)
+        else if (child.dataset.mentionId) out += mentionToken(Number(child.dataset.mentionId))
         else if (child.dataset.uploading || child.dataset.end) continue
         else if (child.tagName === "BR") out += "\n"
         else {

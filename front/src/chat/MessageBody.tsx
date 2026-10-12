@@ -8,7 +8,8 @@ import { Download, File as FileIcon, FileX, Film, FolderArchive, Link, Music, Tr
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatBytes, shareLink, splitContent, withoutMedia } from "./media"
-import type { ChatMessage, MediaInfo } from "./model"
+import { Avatar } from "./Avatar"
+import { userHue, type ChatMessage, type MediaInfo } from "./model"
 import type { ChatState, ChatStore, MediaEntry } from "./store"
 
 export function MessageBody({ message, state, store }: { message: ChatMessage; state: ChatState; store: ChatStore }) {
@@ -20,6 +21,8 @@ export function MessageBody({ message, state, store }: { message: ChatMessage; s
       {splitContent(message.content).map((part, i) =>
         part.kind === "text" ? (
           <span key={i}>{part.text}</span>
+        ) : part.kind === "mention" ? (
+          <Mention key={i} userId={part.userId} state={state} store={store} />
         ) : (
           <MediaPart
             key={i}
@@ -51,6 +54,20 @@ export function MessageBody({ message, state, store }: { message: ChatMessage; s
         />
       )}
     </div>
+  )
+}
+
+/** Story 62 : pastille de mention — mini photo et pseudo à la couleur de la personne. */
+function Mention({ userId, state, store }: { userId: number; state: ChatState; store: ChatStore }) {
+  const pseudo = state.users[userId]?.pseudo
+  return (
+    <span
+      className="mention inline-flex items-center gap-1 rounded-md px-1 align-bottom font-medium whitespace-nowrap"
+      style={{ "--mention-h": userHue(userId) } as React.CSSProperties}
+    >
+      {pseudo && <Avatar userId={userId} state={state} store={store} className="size-4 text-[0.55rem]" />}@
+      {pseudo ?? "inconnu"}
+    </span>
   )
 }
 

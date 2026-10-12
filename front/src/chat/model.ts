@@ -37,9 +37,14 @@ export type ChatMessage = {
   editedAt: number
 }
 
+/** Teinte stable par utilisateur (avatar par défaut, bandeau de profil, mentions). */
+export function userHue(userId: number): number {
+  return (userId * 67) % 360
+}
+
 /** Couleur stable par utilisateur : fond de l'initiale, bandeau de la carte de profil. */
 export function userColor(userId: number): string {
-  return `hsl(${(userId * 67) % 360} 45% 45%)`
+  return `hsl(${userHue(userId)} 45% 45%)`
 }
 
 export function toNumber(value: number | Long | null | undefined): number {
