@@ -236,7 +236,12 @@ message DeleteMessage {
 
 message SyncRequest {
   uint64 channel_id = 1;
+  // `limit` = 0 : tout ce qui suit `last_seen_id` (story 12).
   uint64 last_seen_id = 2;
+  // Story 64 : `limit` > 0 (200 max) = page des `limit` messages qui précèdent
+  // `before_id` (0 = les plus récents), rendus du plus ancien au plus récent.
+  uint64 before_id = 3;
+  uint32 limit = 4;
 }
 
 message CreateChannel {
@@ -396,6 +401,7 @@ message MessageDeleted {
 message SyncResponse {
   uint64 channel_id = 1;
   repeated Message messages = 2; // inclut les messages deleted=true
+  bool has_more = 3;             // story 64 : en mode page, des messages plus anciens restent
 }
 
 message ChannelCreated {

@@ -96,6 +96,17 @@ Stories 38-40 numérotées à la suite (convention des stories 28 et 33), ajout�
     les tombstones (story 13). Une modification faite pendant qu'un client était hors
     ligne lui parvient par la resync complète (story 15).
 
+64. *(ajoutée le 2026-10-12, révise 12 et 15)* En tant qu'utilisateur, je veux qu'une
+    conversation s'ouvre sur ses **64 derniers messages** et que les plus anciens se
+    chargent quand je remonte, sans que ma lecture saute.
+    **Décisions** : `SyncRequest` en mode page (`limit` > 0) rend les `limit` messages
+    précédant `before_id` (0 = les plus récents) par un `krange` inversé — jamais tout
+    le salon — et `has_more` s'il en reste. Cliquer une citation dont l'original
+    n'est pas chargé (story 39) charge les pages jusqu'à lui. À la reconnexion, la
+    conversation repart de sa dernière page (story 15 : modifications et suppressions
+    survenues pendant la coupure prises en compte), on remonte à nouveau si besoin.
+    Le mode `last_seen_id` (tout ce qui suit) reste disponible.
+
 ### Résilience (côté produit, pas juste infra)
 
 16. En tant qu'admin, je veux que le serveur redémarre automatiquement après un
