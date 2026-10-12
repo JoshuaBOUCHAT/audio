@@ -76,6 +76,26 @@ message Message {
   uint64 edited_at = 8;   // story 40 : ms epoch de la dernière modification ; 0 = jamais
 }
 
+// Story 27 : image envoyée par HTTP (`POST /media`), désignée dans les messages par
+// le lien `/media/{id}`. Le contenu ne passe jamais par le WebSocket.
+message Media {
+  string id = 1;        // UUID v4 aléatoire : non devinable (story 48)
+  string mime = 2;      // image/png, image/jpeg, image/webp, image/gif
+  uint64 size = 3;      // octets
+  uint32 width = 4;
+  uint32 height = 5;
+  uint64 owner_id = 6;  // seul à pouvoir la supprimer pour tout le monde (story 50)
+  uint64 created_at = 7; // ms epoch
+}
+
+// Corps de la réponse HTTP 201 à `POST /media` (story 48 : quota après l'envoi ;
+// quota_total 0 = illimité). Les erreurs HTTP portent un `Error` en corps.
+message MediaUploaded {
+  Media media = 1;
+  uint64 quota_used = 2;
+  uint64 quota_total = 3;
+}
+
 // ═══════════════════════════════════
 // CLIENT → SERVEUR
 // ═══════════════════════════════════
@@ -96,6 +116,7 @@ message ClientEnvelope {
     SetStatus         set_status         = 12; // story 41
     OpenDm            open_dm            = 13; // story 28
     SetBio            set_bio            = 14; // story 43
+    DeleteMedia       delete_media       = 15; // story 50
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -165,6 +186,12 @@ message SetBio {
   string bio = 1;
 }
 
+// Story 50 : « supprimer pour tout le monde », par celui qui l'a envoyée (403 sinon).
+// Réponse : MediaDeleted (aussi diffusé à tous).
+message DeleteMedia {
+  string media_id = 1;
+}
+
 // Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
 // suite (story 41).
 message SetStatus {
@@ -210,6 +237,7 @@ message ServerEnvelope {
     StatusSet       status_set        = 12;
     PresenceChanged presence_changed  = 13;
     DmOpened        dm_opened         = 14;
+    MediaDeleted    media_deleted     = 15;
   }
 }
 
@@ -283,6 +311,12 @@ message StatusSet {
 message PresenceChanged {
   uint64 user_id = 1;
   bool online = 2;
+}
+
+// Story 50 : image supprimée du serveur ; partout où son lien apparaît, le client
+// affiche « image supprimée ». Diffusé à tous (l'id, aléatoire, ne révèle rien).
+message MediaDeleted {
+  string media_id = 1;
 }
 
 message Avatar {

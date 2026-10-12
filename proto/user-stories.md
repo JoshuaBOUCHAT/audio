@@ -147,6 +147,58 @@ Numérotées à la suite (34+), même convention que les stories 28 et 33.
     plutôt qu'un DM ouvert directement au clic. Sur ma propre carte, le bouton ouvre
     l'édition de mon profil. Détail client, aucun impact protocole.
 
+### Images
+
+Story 27 remontée en v1 le 2026-10-12 ; 45-50 à la suite.
+
+27. En tant qu'utilisateur, je veux envoyer des images dans une conversation (salon ou
+    DM), par un bouton qui ouvre le sélecteur de fichiers, par Ctrl+V ou par
+    glisser-déposer. Une image apparaît en miniature **à l'endroit du curseur** dans
+    la barre de saisie et je continue d'écrire : texte et images se mélangent
+    librement, dans l'ordre où je les place (contrairement à Discord). Les GIF restent
+    animés.
+    **Décisions** : une image est stockée une fois et reçoit un lien `/media/{id}` ;
+    dans un message, une image **est** ce lien, à sa place dans le texte, et le client
+    affiche en image tout lien `/media/…` du serveur. Le message reste donc du texte
+    (modification story 40, réponse story 39 inchangées) et partager une image ne
+    copie rien (story 46). Fichiers sur disque (`data/media/`, nommés par leur
+    SHA-256 : un même fichier envoyé deux fois n'est stocké qu'une fois),
+    métadonnées dans OxidArt — les images ne vont pas dans OxidArt (elles seraient
+    toutes en RAM et réécrites à chaque snapshot). Transport HTTP sur le même port
+    (`POST /media`, `GET /media/{id}`), pas WebSocket (un gros fichier bloquerait les
+    messages).
+45. En tant qu'utilisateur, je veux sauter une ligne avec Maj+Entrée sans envoyer ;
+    Entrée envoie.
+46. En tant qu'utilisateur, je veux copier le lien d'une image pour la partager dans
+    une autre conversation : c'est la même image, pas une copie. Le lien ne s'ouvre
+    que **dans l'app** (accès authentifié, story 48) ; pour garder une image hors de
+    l'app, je l'enregistre en local (story 49).
+47. En tant qu'utilisateur, je veux que le serveur refuse ce qui n'est pas une image
+    propre. **Décisions** : PNG, JPEG, WebP ou GIF reconnus à leurs octets magiques,
+    en-tête lu pour les dimensions (refus au-delà de 16 384 px de côté : une « bombe »
+    de pixels ferait planter le navigateur des autres) ; pas de décodage complet
+    (le serveur single-thread serait bloqué), pas de réencodage (les GIF gardent leur
+    animation).
+48. En tant qu'opérateur, je veux un **quota d'images par personne** plutôt qu'une
+    limite par fichier. **Décisions** : configurable au lancement, 25 Gio par
+    personne par défaut, 0 = illimité ; dépassement refusé (413) avant d'écrire sur
+    le disque. Accès aux images réservé aux utilisateurs connectés : le client charge
+    l'image avec son token de session (`Authorization`), pas de cookie — un cookie ne
+    suivrait pas la future app Tauri (autre origine que le serveur). Id d'image
+    aléatoire (128 bits) : impossible de deviner les images d'un DM, admin compris
+    (story 32).
+49. En tant qu'utilisateur, je veux cliquer sur une image pour la voir en grand, et
+    pouvoir l'enregistrer en local ou copier son lien depuis là.
+50. En tant qu'utilisateur, je veux supprimer une image : **« ici »** la retire de mon
+    message (modification, story 40) ; **« pour tout le monde »**, réservé à celui qui
+    l'a envoyée, la supprime du serveur — partout où elle est partagée elle s'affiche
+    « image supprimée », et son poids est rendu à mon quota.
+    **Décisions** : en v1 rien n'est nettoyé automatiquement (une image qu'aucun
+    message ne référence reste sur le disque, un lien partagé ne casse jamais seul).
+    Le fichier sur disque est compté par empreinte (counter `media_file:{sha}`) et
+    effacé quand plus aucune image ne le désigne. Plus tard : compter les références
+    depuis les messages (counter par image) pour nettoyer les images orphelines.
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.
@@ -283,7 +335,7 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
 
 ### Pièces jointes
 
-27. En tant qu'utilisateur, je veux envoyer une image dans un message.
+27. *(remontée en v1 le 2026-10-12, voir § Images de la partie V1)*
 
 ---
 
