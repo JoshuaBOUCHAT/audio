@@ -37,6 +37,8 @@ struct Head {
     media_name: Option<String>,
     folder_files: u32,
     folder_size: u64,
+    /// Story 54 : `Range: bytes=…` (lecture vidéo, reprise de téléchargement).
+    range: Option<String>,
     keep_alive: bool,
 }
 
@@ -95,6 +97,7 @@ async fn read_head(tls: &mut TlsStream, buf: &mut Vec<u8>) -> Option<Head> {
                         media_name: header("x-media-name"),
                         folder_files: header("x-folder-files").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                         folder_size: header("x-folder-size").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                        range: header("range"),
                         keep_alive: req.version == Some(1) && !close,
                     };
                     buf.drain(..len);
@@ -223,7 +226,10 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
         received += take as u64;
     }
     file.close().await?;
-    let (mime, width, height) = media::sniff(&probe).unwrap_or((media::FILE_MIME, 0, 0));
+    let (mime, width, height) = media::sniff(&probe)
+        .ok()
+        .or_else(|| media::sniff_video(&probe).map(|mime| (mime, 0, 0)))
+        .unwrap_or((media::FILE_MIME, 0, 0));
     let fallback = if mime == media::FILE_MIME { "fichier" } else { "image" };
     let name = media::sanitize_name(head.media_name.as_deref(), fallback);
     let sha256: String = hasher.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect();
@@ -276,11 +282,12 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
     Ok(true)
 }
 
-/// Stories 27, 46, 48, 53 : réservé aux utilisateurs connectés (session en
-/// `Authorization`) ou porteurs d'un ticket de téléchargement ; fichier lu par
-/// morceaux (io_uring) sans le charger entier. Immuable (un id ne change jamais de
-/// contenu) : cache navigateur d'un an. Un fichier, ou tout téléchargement par
-/// ticket, part en pièce jointe : jamais interprété par le navigateur (story 51).
+/// Stories 27, 46, 48, 53-54 : réservé aux utilisateurs connectés (session en
+/// `Authorization`) ou porteurs d'un ticket ; fichier lu par morceaux (io_uring) sans
+/// le charger entier. Immuable (un id ne change jamais de contenu) : cache navigateur
+/// d'un an. En pièce jointe — jamais interprété par le navigateur — un fichier, ou
+/// tout ce qui passe par un ticket de téléchargement ; en ligne, une image ou une
+/// vidéo (ticket de lecture, story 54). Une plage `Range` donne un 206.
 async fn get_media(
     tls: &mut TlsStream,
     state: &AppState,
@@ -293,24 +300,22 @@ async fn get_media(
             return Err(media::not_found());
         }
         let mut art = state.art.borrow_mut();
-        match ticket {
-            Some(ticket) if media::check_ticket(&mut art, ticket, id) => {}
-            Some(_) => {
-                return Err(proto::Error {
-                    code: 401,
-                    message: "ticket de téléchargement invalide ou expiré".to_string(),
-                });
-            }
+        let kind = match ticket {
+            Some(ticket) => Some(media::check_ticket(&mut art, ticket, id).ok_or(proto::Error {
+                code: 401,
+                message: "ticket invalide ou expiré".to_string(),
+            })?),
             None => {
                 drop(art);
                 bearer_user(state, head)?;
                 art = state.art.borrow_mut();
+                None
             }
-        }
-        media::load(&mut art, id).ok_or_else(media::not_found)
+        };
+        Ok((media::load(&mut art, id).ok_or_else(media::not_found)?, kind))
     })();
-    let stored = match found {
-        Ok(stored) => stored,
+    let (stored, kind) = match found {
+        Ok(found) => found,
         Err(error) => return respond_error(tls, &error).await,
     };
     let file = match File::open(state.media.file_path(&stored.sha256)).await {
@@ -321,7 +326,8 @@ async fn get_media(
         }
     };
     let meta = &stored.meta;
-    let attachment = ticket.is_some() || meta.mime == media::FILE_MIME;
+    let is_file = meta.mime == media::FILE_MIME;
+    let attachment = is_file || kind == Some(media::Ticket::Download);
     let disposition = if attachment {
         // Repli ASCII pour les vieux clients, nom exact en UTF-8 (RFC 6266 / 5987).
         let ascii: String = meta.name.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
@@ -332,15 +338,34 @@ async fn get_media(
     } else {
         String::new()
     };
-    let content_type = if meta.mime == media::FILE_MIME { media::FILE_MIME } else { &meta.mime };
+    let (status, start, end) = match head.range.as_deref().map(|r| parse_range(r, meta.size)) {
+        None | Some(RangeSpec::Ignored) => ("200 OK", 0, meta.size),
+        Some(RangeSpec::Satisfiable(start, end)) => ("206 Partial Content", start, end),
+        Some(RangeSpec::Unsatisfiable) => {
+            let header = format!(
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\n\r\n",
+                meta.size
+            );
+            let _ = file.close().await;
+            return tls.write_all(header.into_bytes()).await.0.map(|_| ());
+        }
+    };
+    let content_range = if status.starts_with("206") {
+        format!("Content-Range: bytes {start}-{}/{}\r\n", end - 1, meta.size)
+    } else {
+        String::new()
+    };
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\n{disposition}Cache-Control: private, max-age=31536000, immutable\r\nX-Media-Owner: {}\r\n\r\n",
-        meta.size, meta.owner_id
+        "HTTP/1.1 {status}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{content_range}Accept-Ranges: bytes\r\nX-Content-Type-Options: nosniff\r\n{disposition}Cache-Control: private, max-age=31536000, immutable\r\nX-Media-Owner: {}\r\n\r\n",
+        meta.mime,
+        end - start,
+        meta.owner_id
     );
     tls.write_all(header.into_bytes()).await.0?;
-    let mut pos = 0;
+    let mut pos = start;
     let mut chunk = vec![0u8; CHUNK];
-    while pos < meta.size {
+    while pos < end {
+        chunk.truncate(CHUNK.min((end - pos) as usize));
         let (res, mut c) = file.read_at(chunk, pos).await;
         let n = res?;
         if n == 0 {
@@ -355,6 +380,41 @@ async fn get_media(
     }
     let _ = file.close().await;
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum RangeSpec {
+    /// `[start, end)` dans le fichier.
+    Satisfiable(u64, u64),
+    Unsatisfiable,
+    /// Forme non gérée (plusieurs plages, unité autre que bytes) : réponse entière,
+    /// comme le permet la RFC 9110.
+    Ignored,
+}
+
+/// Story 54 : une seule plage `bytes=a-b`, `bytes=a-` ou `bytes=-n` (n derniers).
+fn parse_range(header: &str, size: u64) -> RangeSpec {
+    let Some(spec) = header.trim().strip_prefix("bytes=") else {
+        return RangeSpec::Ignored;
+    };
+    if spec.contains(',') {
+        return RangeSpec::Ignored;
+    }
+    let Some((a, b)) = spec.split_once('-') else {
+        return RangeSpec::Ignored;
+    };
+    let (a, b) = (a.trim(), b.trim());
+    let range = match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(start), Ok(last)) if start <= last => (start, last.saturating_add(1).min(size)),
+        (Ok(start), Err(_)) if b.is_empty() => (start, size),
+        (Err(_), Ok(n)) if a.is_empty() && n > 0 => (size.saturating_sub(n), size),
+        _ => return RangeSpec::Ignored,
+    };
+    if range.0 >= size {
+        RangeSpec::Unsatisfiable
+    } else {
+        RangeSpec::Satisfiable(range.0, range.1)
+    }
 }
 
 async fn respond(
@@ -394,5 +454,22 @@ fn reason(status: u16) -> &'static str {
         411 => "Length Required",
         413 => "Payload Too Large",
         _ => "Error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plages() {
+        assert_eq!(parse_range("bytes=0-99", 1000), RangeSpec::Satisfiable(0, 100));
+        assert_eq!(parse_range("bytes=900-", 1000), RangeSpec::Satisfiable(900, 1000));
+        assert_eq!(parse_range("bytes=-100", 1000), RangeSpec::Satisfiable(900, 1000));
+        assert_eq!(parse_range("bytes=500-5000", 1000), RangeSpec::Satisfiable(500, 1000));
+        assert_eq!(parse_range("bytes=1000-", 1000), RangeSpec::Unsatisfiable);
+        assert_eq!(parse_range("bytes=0-1,5-9", 1000), RangeSpec::Ignored);
+        assert_eq!(parse_range("items=0-1", 1000), RangeSpec::Ignored);
+        assert_eq!(parse_range("bytes=9-3", 1000), RangeSpec::Ignored);
     }
 }

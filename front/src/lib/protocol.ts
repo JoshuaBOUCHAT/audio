@@ -63,9 +63,12 @@ export function getMedia(mediaIds: string[]): ClientEnvelopeShape {
   return { payload: "getMedia", getMedia: { mediaIds } };
 }
 
-/** Story 53 : ticket de téléchargement natif (60 s). */
-export function requestDownload(mediaId: string): ClientEnvelopeShape {
-  return { payload: "requestDownload", requestDownload: { mediaId } };
+/**
+ * Story 53 : ticket de téléchargement natif (60 s). Story 54 : `inline` = ticket de
+ * lecture (vidéo servie en ligne, par plages), 1 h prolongée à chaque requête.
+ */
+export function requestDownload(mediaId: string, inline = false): ClientEnvelopeShape {
+  return { payload: "requestDownload", requestDownload: { mediaId, inline } };
 }
 
 /** Story 43 : vide = retirer la description. */

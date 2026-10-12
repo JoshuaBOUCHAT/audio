@@ -191,6 +191,25 @@ pub fn delete(art: &mut OxidArt, config: &MediaConfig, id: &str, user_id: u64) -
     Ok(())
 }
 
+/// Story 54 : vidéo lisible par le lecteur du navigateur, reconnue à ses octets
+/// magiques — MP4/MOV (boîte `ftyp` en tête), WebM/Matroska (en-tête EBML). Un MP4
+/// audio seul (marques M4A/M4B/M4P) n'en est pas une.
+pub fn sniff_video(probe: &[u8]) -> Option<&'static str> {
+    if probe.len() >= 12 && &probe[4..8] == b"ftyp" {
+        return match &probe[8..12] {
+            b"M4A " | b"M4B " | b"M4P " => None,
+            b"qt  " => Some("video/quicktime"),
+            _ => Some("video/mp4"),
+        };
+    }
+    if probe.starts_with(b"\x1a\x45\xdf\xa3") {
+        let head = &probe[..probe.len().min(64)];
+        let webm = head.windows(4).any(|w| w == b"webm");
+        return Some(if webm { "video/webm" } else { "video/x-matroska" });
+    }
+    None
+}
+
 /// Story 51 : un fichier qui n'est pas une image propre.
 pub const FILE_MIME: &str = "application/octet-stream";
 const MAX_NAME_CHARS: usize = 255;
@@ -244,31 +263,62 @@ pub fn percent_encode(name: &str) -> String {
         .collect()
 }
 
-/// Story 53 : durée de vie d'un ticket de téléchargement (TTL natif d'OxidArt). Vérifiée
-/// au début de la requête seulement : un téléchargement plus long n'est pas coupé.
-const TICKET_TTL: Duration = Duration::from_secs(60);
-
-fn ticket_key(ticket: &str) -> String {
-    format!("download_ticket:{ticket}")
+/// Story 53 : ticket de téléchargement, servi en pièce jointe, 60 s (TTL natif
+/// d'OxidArt) — vérifié au début de la requête seulement : un téléchargement plus long
+/// n'est pas coupé.
+/// Story 54 : ticket de lecture, servi en ligne (lecteur vidéo, requêtes Range), 1 h
+/// prolongée à chaque requête — une vidéo en pause ne coupe pas.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Ticket {
+    Download,
+    Stream,
 }
 
-pub fn create_ticket(art: &mut OxidArt, media_id: &str) -> String {
+impl Ticket {
+    fn prefix(self) -> &'static str {
+        match self {
+            Ticket::Download => "download_ticket:",
+            Ticket::Stream => "stream_ticket:",
+        }
+    }
+
+    fn ttl(self) -> Duration {
+        match self {
+            Ticket::Download => Duration::from_secs(60),
+            Ticket::Stream => Duration::from_secs(3600),
+        }
+    }
+}
+
+pub fn create_ticket(art: &mut OxidArt, media_id: &str, kind: Ticket) -> String {
     let ticket = uuid::Uuid::new_v4().to_string();
     art.set_ttl(
-        SharedByte::from_str(&ticket_key(&ticket)),
-        TICKET_TTL,
+        SharedByte::from_str(&format!("{}{ticket}", kind.prefix())),
+        kind.ttl(),
         Value::String(SharedByte::from_str(media_id)),
     );
     ticket
 }
 
-/// Ticket valide pour ce média (réutilisable pendant ses 60 s : le navigateur peut
-/// rejouer la requête).
-pub fn check_ticket(art: &mut OxidArt, ticket: &str, media_id: &str) -> bool {
-    is_media_id(ticket)
-        && art
-            .get(ticket_key(ticket).as_bytes())
-            .is_some_and(|v| v.as_bytes().is_some_and(|b| b.as_slice() == media_id.as_bytes()))
+/// Sorte du ticket s'il est valide pour ce média (réutilisable pendant sa durée de vie :
+/// le navigateur rejoue des requêtes) ; un ticket de lecture est prolongé.
+pub fn check_ticket(art: &mut OxidArt, ticket: &str, media_id: &str) -> Option<Ticket> {
+    if !is_media_id(ticket) {
+        return None;
+    }
+    for kind in [Ticket::Download, Ticket::Stream] {
+        let key = format!("{}{ticket}", kind.prefix());
+        let valid = art
+            .get(key.as_bytes())
+            .is_some_and(|v| v.as_bytes().is_some_and(|b| b.as_slice() == media_id.as_bytes()));
+        if valid {
+            if kind == Ticket::Stream {
+                art.set_ttl(SharedByte::from_str(&key), kind.ttl(), Value::String(SharedByte::from_str(media_id)));
+            }
+            return Some(kind);
+        }
+    }
+    None
 }
 
 pub fn not_found() -> proto::Error {
@@ -304,6 +354,16 @@ mod tests {
         assert_eq!(sniff(b"<svg onload=alert(1)>").unwrap_err().code, 400);
         assert_eq!(sniff(&png(MAX_SIDE + 1, 10)).unwrap_err().code, 400);
         assert_eq!(sniff(&png(0, 10)).unwrap_err().code, 400);
+    }
+
+    #[test]
+    fn videos() {
+        assert_eq!(sniff_video(b"\0\0\0\x20ftypisom\0\0\x02\0"), Some("video/mp4"));
+        assert_eq!(sniff_video(b"\0\0\0\x14ftypqt  \0\0\0\0"), Some("video/quicktime"));
+        assert_eq!(sniff_video(b"\0\0\0\x20ftypM4A \0\0\0\0"), None);
+        assert_eq!(sniff_video(b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm"), Some("video/webm"));
+        assert_eq!(sniff_video(b"\x1a\x45\xdf\xa3\x42\x82\x88matroska"), Some("video/x-matroska"));
+        assert_eq!(sniff_video(b"PK\x03\x04"), None);
     }
 
     #[test]

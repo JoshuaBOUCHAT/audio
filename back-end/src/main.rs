@@ -389,7 +389,8 @@ fn handle_client_envelope(
                 if !media::is_media_id(&req.media_id) || media::load(&mut art, &req.media_id).is_none() {
                     return Err(media::not_found());
                 }
-                Ok(media::create_ticket(&mut art, &req.media_id))
+                let kind = if req.inline { media::Ticket::Stream } else { media::Ticket::Download };
+                Ok(media::create_ticket(&mut art, &req.media_id, kind))
             });
             match ticket {
                 Ok(ticket) => proto::server_envelope::Payload::DownloadTicket(proto::DownloadTicket {
