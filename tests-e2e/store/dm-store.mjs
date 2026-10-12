@@ -1,0 +1,35 @@
+const FRONT = "/home/joshua/rust/audio/front";
+const { createServer } = await import(FRONT + "/node_modules/vite/dist/node/index.js");
+const mem = new Map();
+globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+const vite = await createServer({ root: FRONT, configFile: FRONT + "/vite.config.ts", server: { middlewareMode: true }, appType: "custom", logLevel: "error" });
+const { ChatStore } = await vite.ssrLoadModule("/src/chat/store.ts");
+const { byLastActivity } = await vite.ssrLoadModule("/src/chat/model.ts");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(f, what, ms = 5000) { for (let t = 0; t < ms; t += 25) { if (f()) return; await sleep(25); } console.log("ÉCHEC (timeout)", what); process.exit(1); }
+const ok = (c, m) => { if (!c) { console.log("ÉCHEC", m); process.exit(1); } console.log("ok", m); };
+const s = (x) => x.getSnapshot();
+const t = (n) => `00000000-0000-0000-0000-00000000000${n}`;
+async function user(n, pseudo) { const x = new ChatStore(t(n)); x.start(); await until(() => s(x).phase === "pseudo", pseudo); await x.setPseudo(pseudo); return x; }
+const A = await user(1, "Admin"), B = await user(2, "Bob"), C = await user(3, "Cléo");
+const bId = s(B).me.id, cId = s(C).me.id;
+const ab = await A.openDm(bId);
+ok(ab && s(A).dms.some((d) => d.id === ab && d.otherId === bId), "A ouvre un DM avec Bob");
+const ac = await A.openDm(cId);
+await sleep(150); ok(s(B).dms.length === 0 && s(C).dms.length === 0, "rien chez Bob ni Cléo avant le premier message");
+A.open(ab); await until(() => s(A).messages[ab], "sync DM");
+ok(await A.send(ab, "salut Bob"), "A écrit à Bob");
+await until(() => s(B).dms.length === 1, "Bob découvre le DM");
+ok(s(B).dms[0].otherId === s(A).me.id && s(B).dms[0].lastMessageId > 0, "chez Bob : DM avec Admin, daté");
+B.open(ab); await until(() => s(B).messages[ab]?.length === 1, "Bob charge le DM");
+ok(await B.send(ab, "salut !"), "Bob répond");
+await until(() => s(A).messages[ab].length === 2, "A reçoit la réponse");
+ok(await A.send(ac, "et toi Cléo ?"), "A écrit à Cléo (DM non chargé côté A)");
+ok([...s(A).dms].sort(byLastActivity)[0].id === ac, "tri : la conversation la plus récente d'abord");
+await until(() => s(C).dms.length === 1, "Cléo découvre le DM");
+ok(!(s(C).messages[ab]), "Cléo ne reçoit rien du DM Admin-Bob");
+const bobMsg = s(A).messages[ab].find((m) => m.userId === bId);
+await A.remove(ab, bobMsg.id); ok(s(A).error && !s(A).messages[ab].find((m) => m.id === bobMsg.id).deleted, "admin : ne supprime pas le message de Bob en DM");
+A.clearError();
+await until(() => true, "");
+for (const x of [A, B, C]) x.dispose(); await vite.close(); process.exit(0);

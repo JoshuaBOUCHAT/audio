@@ -1,0 +1,20 @@
+import * as P from "/home/joshua/rust/audio/front/src/lib/protocol.ts";
+import { chat } from "/home/joshua/rust/audio/front/src/proto/messages.js";
+const BASE = "https://127.0.0.1:8444";
+const ok = (c: any, m: string) => { if (!c) { console.log("ÉCHEC", m); process.exit(1); } console.log("ok", m); };
+const ws = new WebSocket("wss://127.0.0.1:8444"); await new Promise((r) => (ws.onopen = r));
+const c = new P.ProtocolClient(ws as any);
+const token = (await c.request(P.authRequest("00000000-0000-0000-0000-000000000001"))).authResponse!.sessionToken!;
+await c.request(P.setPseudo("Léa"));
+const up = async (bytes: number[], name: string) => {
+  const b = new Uint8Array(50_000); b.set(bytes);
+  const r = await fetch(BASE + "/media", { method: "POST", headers: { Authorization: `Bearer ${token}`, "X-Media-Name": name }, body: b });
+  return chat.MediaUploaded.decode(new Uint8Array(await r.arrayBuffer())).media!;
+};
+const mp3 = await up([0x49, 0x44, 0x33, 4, 0], "chanson.mp3");
+ok(mp3.mime === "audio/mpeg", "MP3 (ID3) reconnu");
+ok((await up([...new TextEncoder().encode("fLaC")], "x.flac")).mime === "audio/flac", "FLAC reconnu");
+const t = (await c.request(P.requestDownload(mp3.id, true))).downloadTicket!.ticket;
+const r = await fetch(`${BASE}/media/${mp3.id}?ticket=${t}`, { headers: { Range: "bytes=0-99" } });
+ok(r.status === 206 && r.headers.get("content-type") === "audio/mpeg" && !r.headers.get("content-disposition"), "son servi en ligne par plages");
+process.exit(0);

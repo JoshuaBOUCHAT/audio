@@ -32,9 +32,12 @@ audio/
 `back-end/`, `front/` et une future app Tauri consomment tous `proto/`. Ne jamais
 définir de types de message ailleurs que dans `proto/messages.proto`.
 
-État actuel (2026-10-11) : le serveur texte v1 est implémenté (auth, salons, messages,
-broadcast, persistance) ; le front n'a qu'une page de debug (`/debug`). Point de
-reprise détaillé : `HANDOFF.md` ; points repoussés : `TODO.md`.
+État actuel (2026-10-12) : serveur et client web complets pour le texte (salons, DM,
+réponses, modifications, mentions, pagination), les médias (images, vidéo, audio,
+fichiers, dossiers ZIP), la présence, les notifications et les comptes à mot de passe
+sur invitation ; vocal pas commencé. Point de reprise détaillé (lancer, structure,
+prochaines étapes) : `HANDOFF.md` ; points repoussés : `TODO.md` ; tests manuels de
+bout en bout : `tests-e2e/`.
 
 ## Commandes
 

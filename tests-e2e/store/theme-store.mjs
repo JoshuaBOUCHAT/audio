@@ -1,0 +1,28 @@
+const FRONT = "/home/joshua/rust/audio/front";
+const { createServer } = await import(FRONT + "/node_modules/vite/dist/node/index.js");
+const mem = new Map();
+globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+const classes = new Set();
+globalThis.window = { matchMedia: () => ({ matches: false, addEventListener() {} }), location: { origin: "x" } };
+globalThis.document = { documentElement: { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) }, style: {} } };
+const vite = await createServer({ root: FRONT, configFile: FRONT + "/vite.config.ts", server: { middlewareMode: true }, appType: "custom", logLevel: "error" });
+const { ChatStore } = await vite.ssrLoadModule("/src/chat/store.ts");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(f, what, ms = 5000) { for (let t = 0; t < ms; t += 25) { if (f()) return; await sleep(25); } console.log("ÉCHEC (timeout)", what); process.exit(1); }
+const ok = (c, m) => { if (!c) { console.log("ÉCHEC", m); process.exit(1); } console.log("ok", m); };
+const s = (x) => x.getSnapshot();
+const T1 = "00000000-0000-0000-0000-000000000001";
+const A1 = new ChatStore(T1); A1.start(); await until(() => s(A1).phase === "pseudo", "A1"); await A1.setPseudo("Léa");
+ok(s(A1).me.theme === "system" && !classes.has("dark"), "nouveau compte : thème Système (OS clair ici)");
+const A2 = new ChatStore(T1); A2.start(); await until(() => s(A2).phase === "ready", "A2");
+const B = new ChatStore("00000000-0000-0000-0000-000000000002"); B.start(); await until(() => s(B).phase === "pseudo", "B"); await B.setPseudo("Bob");
+await A1.setTheme("dark");
+ok(classes.has("dark") && mem.get("audio.theme") === "dark", "sombre appliqué tout de suite, copie locale");
+await until(() => s(A2).me.theme === "dark", "autre appareil de Léa");
+ok(true, "l'autre appareil de Léa bascule en direct");
+await sleep(100); ok(s(B).me.theme === "system", "Bob n'est pas concerné");
+A1.dispose(); A2.dispose();
+const A3 = new ChatStore(T1); A3.start(); await until(() => s(A3).phase === "ready", "A3");
+ok(s(A3).me.theme === "dark", "nouvelle connexion : thème du compte retrouvé");
+await A3.setTheme("light"); ok(!classes.has("dark") && mem.get("audio.theme") === "light", "retour en clair");
+A3.dispose(); B.dispose(); await vite.close(); process.exit(0);

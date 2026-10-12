@@ -1,0 +1,38 @@
+import * as P from "/home/joshua/rust/audio/front/src/lib/protocol.ts";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const ok = (c: any, m: string) => { if (!c) { console.log("ÉCHEC", m); process.exit(1); } console.log("ok", m); };
+const t = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+async function conn(n: number, pseudo?: string) {
+  const ws = new WebSocket("wss://127.0.0.1:8444"); await new Promise((r) => (ws.onopen = r));
+  const c = new P.ProtocolClient(ws as any); const ev: any[] = []; c.onEvent((e) => ev.push(e));
+  const auth = (await c.request(P.authRequest(t(n)))).authResponse!;
+  if (pseudo) await c.request(P.setPseudo(pseudo));
+  return { c, ev, auth, id: Number(auth.me!.id), ws };
+}
+const unread = (a: any, ch: number) => a.unread.find((u: any) => Number(u.channelId) === ch);
+const A = await conn(1, "Léa"), B = await conn(2, "Bob");
+const ch = Number((await A.c.request(P.createChannel("g"))).channelCreated!.channel!.id);
+const ids: number[] = [];
+for (let i = 0; i < 5; i++) ids.push(Number((await A.c.request(P.sendMessage(ch, "m" + i))).newMessage!.message!.id));
+await B.c.request(P.sendMessage(ch, "de Bob"));
+const dm = Number((await A.c.request(P.openDm(B.id))).dmOpened!.conversation!.channel!.id);
+await A.c.request(P.sendMessage(dm, "privé"));
+let B2 = await conn(2);
+ok(unread(B2.auth, ch).count === 5 && Number(unread(B2.auth, ch).lastReadId) === 0, "Bob : 5 non-lus dans le salon (ses propres messages exclus)");
+ok(unread(B2.auth, dm).count === 1, "Bob : 1 non-lu dans le DM");
+ok(B2.auth.settings!.sound === "pop" && !B2.auth.settings!.desktopNotifications, "réglages par défaut : son pop, pas de popups");
+const r = await B2.c.request(P.markRead(ch, ids[2]));
+ok(Number(r.readMarked!.lastReadId) === ids[2], "Bob lit jusqu'au 3e message");
+await sleep(100);
+ok(B.ev.some((e) => e.readMarked && Number(e.readMarked.lastReadId) === ids[2]), "l'autre appareil de Bob reçoit le marqueur");
+ok(!A.ev.some((e) => e.readMarked), "Léa ne reçoit rien");
+ok(Number((await B.c.request(P.markRead(ch, ids[0]))).readMarked!.lastReadId) === ids[2], "le marqueur ne recule pas");
+ok((await A.c.request(P.markRead(999999, 1))).error?.code === 404, "marquer une conversation inconnue : 404");
+const C = await conn(3, "Cléo");
+ok((await C.c.request(P.markRead(dm, 1))).error?.code === 404, "marquer le DM des autres : 404");
+const s = await B.c.request(P.setSettings({ sound: "ding", desktopNotifications: true, rules: [{ channelId: ch, muted: true }, { channelId: dm, silent: true }] }));
+ok(s.settingsSet!.settings!.rules!.length === 2, "réglages enregistrés");
+await sleep(100); ok(B2.ev.some((e) => e.settingsSet?.settings?.sound === "ding"), "poussés à l'autre appareil");
+const B3 = await conn(2);
+ok(unread(B3.auth, ch).count === 2 && B3.auth.settings!.rules!.find((x) => Number(x.channelId) === ch)!.muted, "reconnexion : 2 non-lus, réglages retrouvés");
+process.exit(0);

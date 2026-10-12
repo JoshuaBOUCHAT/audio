@@ -1,116 +1,127 @@
 # Handoff — point de reprise
 
 Note de travail, pas de la doc durable : décrit où en est le projet et quoi faire
-ensuite. Décisions durables → `CLAUDE.md` / `architecture.md` / `proto/user-stories.md`.
-Points repoussés → `TODO.md`.
+ensuite. Décisions durables → `CLAUDE.md` / `architecture.md` / `proto/user-stories.md`
+(stories 1-69, chacune avec ses **Décisions**). Points repoussés → `TODO.md`.
 
-## État au 2026-10-11 — serveur texte v1 complet
+## État au 2026-10-12 — texte, médias, présence, notifications, comptes : faits
 
-Tout est testé de bout en bout (scripts Node jetables avec `ProtocolClient` contre le
-vrai serveur, redémarrage compris).
+Tout est testé contre le vrai serveur (scripts de `tests-e2e/`), **mais rien n'a été
+vu dans un navigateur** pendant la session (pas d'outil navigateur) : rendu, barre de
+saisie riche, menus, lecteurs, thème sombre, défilement paginé sont vérifiés par la
+logique seulement. Les retours de l'utilisateur en usage réel ont déjà corrigé
+quelques points ; à relire visuellement en priorité.
 
-| Fonction | Où | Notes |
-|---|---|---|
-| Auth lien magique + reprise de session | `main.rs` `handle_auth` | lien loggé sur stdout, TTL 15 min, usage unique ; `session_token` sans expiration ; auth liée à la connexion WS (story 33) |
-| Bootstrap admin | `main.rs` `main` | email en argument CLI ou `ADMIN_EMAIL`, admin à sa première connexion |
-| Salons | `create_channel`, `list_channels` | admin only (403), nom trimé non vide (400), unique parmi les salons texte, casse ignorée (409) ; liste dans `AuthResponse.channels` |
-| Messages | `send_message`, `sync_messages`, `delete_message` | salon texte uniquement (DM refusés : pas encore de livraison ciblée) ; tombstones (`deleted`, contenu vidé) ; suppression par l'auteur ou l'admin (403) |
-| Broadcast | `registry.rs` | modèle proactif repris du `SubRegistry` de radixox ; aux connexions authentifiées sauf l'émetteur, qui reçoit sa réponse avec `request_id` |
-| Persistance | `persist.rs` | reload de `data/dump.rxd` au démarrage ; `SAVE` toutes les 10 s si `dirty` ; `SAVE` sur Ctrl-C/SIGTERM (second signal : sortie sans save) |
-| Clés salon / message | `keys.rs` | `channel:{id}`, `message:{ch}:{id}`, id en hex sur 9 caractères ; listes triées par `krange` d'oxidart, ids client hors borne → 404 / sync vide |
-| Front debug | `front/src/debug/AuthDebug.tsx` | `/debug`, zéro CSS, toutes les requêtes + broadcasts reçus |
-
-Codes d'erreur utilisés : 400 (entrée invalide), 401 (non authentifié / token
-invalide), 403 (droit manquant), 404 (salon ou message inconnu), 409 (nom de salon pris).
-
-### Lancer et tester à la main
+### Lancer
 
 ```bash
 cd back-end && cargo run -- ton@email     # https://127.0.0.1:8443, données dans ./data
-# navigateur : ouvrir https://127.0.0.1:8443 une fois pour accepter le cert auto-signé
-cd front && npm run dev                   # http://localhost:5173/debug
+cd front && npm run dev                   # http://localhost:5173 (+ /debug, page brute)
 ```
 
-Comptes à mot de passe sur invitation (stories 65-68) : au premier lancement, le
-serveur affiche `[boot] compte admin … à créer : ouvrir /?invite=…` — ouvrir ce
-chemin sur le front (`http://localhost:5173/?invite=…` en dev) et créer le compte
-avec l'email du bootstrap. L'admin invite ensuite depuis Paramètres > Administration.
-Le pepper des mots de passe est dans `data/pepper` (le perdre invalide tous les mots
-de passe ; les liens de connexion de l'admin restent la sortie de secours).
-En build debug, connexion directe sans lien : tokens permanents
-`00000000-0000-0000-0000-00000000000N` (N = 1 à 9 ; 1 = admin du bootstrap, sinon
-`devN@dev.local`), boutons « Admin / Dev 2 / Dev 3 » sur l'écran de login de `npm run
-dev`. Compilés hors d'un build release (`#[cfg(debug_assertions)]`).
+- Navigateur : ouvrir https://127.0.0.1:8443 une fois pour accepter le cert auto-signé
+  (sinon « Connexion au serveur… » sans fin). Piste durable : `mkcert` (non fait,
+  ajoute une CA locale : à l'utilisateur de décider).
+- Build debug : comptes de dev permanents `00000000-0000-0000-0000-00000000000N`
+  (1 = admin du bootstrap, sinon `devN@dev.local`), boutons Admin / Dev 2 / Dev 3 sur
+  l'écran de login. Absents en release (`#[cfg(debug_assertions)]`).
+- Premier lancement sans compte admin : le serveur affiche
+  `[boot] compte admin … à créer : ouvrir /?invite=…` → ouvrir
+  `http://localhost:5173/?invite=…` et créer le compte avec l'email du bootstrap.
+- Un compte venu d'un lien ou d'un token de dev n'a pas de mot de passe : le définir
+  dans Paramètres > Profil. (Le compte de l'utilisateur est dans ce cas.)
+- Proxy Vite : `/media` → back-end (`AUDIO_BACK_END` pour viser un autre port).
 
-## Décisions de la session du 2026-10-11
+Variables d'environnement serveur : `ADMIN_EMAIL` (ou argument), `AUDIO_DATA_DIR`
+(`./data`), `AUDIO_LISTEN` (`127.0.0.1:8443`), `AUDIO_MEDIA_QUOTA_GIB` (25, 0 =
+illimité), `AUDIO_PEPPER` (sinon `data/pepper`), et pour les tests
+`AUDIO_PRESENCE_DELAY_MS`, `AUDIO_HEARTBEAT_MS`.
 
-- Persistance v1 = snapshot oxidart only ; log pur (trace humaine) en fichier
-  append, logique métier dans OxidArt, AOF oxidart reporté (CLAUDE.md § Résilience).
-- audio reste sur monoio même si radixox passe à sa boucle io_uring maison.
-- Save périodique = `SAVE` sync tant qu'oxidart n'expose pas sa BGSAVE en lib
-  (le fsync fige le serveur pendant l'écriture, négligeable à cette échelle).
-- Story 15 : le client resync depuis `last_seen_id = 0` à la reconnexion (la
-  suppression d'un message d'id ≤ `last_seen_id` n'est pas renvoyée autrement).
-- Clés en hex à longueur fixe (ordre des octets = ordre numérique) ; le 2026-10-12,
-  `krange` d'oxidart remplace `getn` + tri par id, et `channel:{id}` passe au même
-  encodage (un dump antérieur n'est plus relu correctement).
-- Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
-- Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
-- Persistance en bincode, gardée volontairement (2026-10-12) : en **release**, un dump
-  dont le schéma ne correspond plus fait planter le chargement plutôt que d'être relu
-  avec des valeurs par défaut qui masqueraient une incohérence (protobuf écarté pour
-  cette raison). En **debug** (`codec.rs`), un champ ajouté en fin de type est relu
-  avec sa valeur par défaut et le dump est remis au schéma courant au démarrage :
-  plus besoin de supprimer `data/dump.rxd`. Règle : **un nouveau champ va toujours à
-  la fin** de son message (`StoredMedia` : `sha256` puis `meta`) ; retirer, déplacer
-  ou retyper un champ plante toujours.
+### Données (`data/`)
 
-## Client front (2026-10-12) — fonctionnel, pas encore relu visuellement
+- `dump.rxd` : snapshot OxidArt (SAVE toutes les 10 s si modifié, et à l'arrêt).
+  **Debug** : un champ ajouté en fin de type est relu avec sa valeur par défaut et le
+  dump remis à niveau au démarrage (`codec.rs`) ; un média illisible est retiré.
+  **Release** : échec franc. Règle : **un nouveau champ protobuf va toujours à la
+  fin de son message** ; retirer / déplacer / retyper un champ casse les dumps.
+- `media/{sha256}` : fichiers envoyés (dédupliqués), `media/tmp/` pendant l'envoi.
+- `pepper` : secret des mots de passe (0600). Le perdre invalide tous les mots de
+  passe (sortie de secours : liens de connexion de l'admin).
 
-`front/src/chat/` sur `/` (la page `/debug` reste) :
+### Back-end (`back-end/src/`)
 
 | Fichier | Rôle |
 |---|---|
-| `store.ts` | `ChatStore` hors React (`useSyncExternalStore`) : un WS par onglet, auth, broadcasts, reconnexion à backoff 0,5 s → 10 s (story 17) puis resync depuis 0 des salons ouverts |
-| `session.ts` | `session_token` en `localStorage` (try/catch), token de lien magique lu dans `?token=` puis retiré de l'URL |
-| `model.ts` | conversion proto → types d'affichage (`Long` → number), fusion des messages par id |
-| `Login.tsx` / `ChatView.tsx` | login (email, puis lien ou token collé) ; salons + fil + saisie, suppression au survol (auteur ou admin), création de salon (admin) |
-| `PseudoScreen.tsx` / `ProfilePanel.tsx` / `Avatar.tsx` | pseudo obligatoire avant le chat (story 34) ; profil : pseudo, photo (stories 35, 37) ; photo ou initiale, chargée à la demande et mise en cache par version (story 36) |
-| `MembersPanel.tsx` | membres à droite, « En ligne / Hors ligne — N », triés par pseudo ; statut En ligne / Invisible dans le profil (stories 23, 41-42 ; présence en mémoire côté serveur, `presence.rs`) |
-| `ChatView.tsx` (DM) | bouton Salons / Privé en haut à gauche ; DM triés par dernière activité ; clic sur un membre = ouvrir le DM et basculer dessus (stories 28-32) ; même `ChannelFeed` que les salons |
-| `MessageBody.tsx` (vidéo) | lecteur intégré, lecture par plages avec ticket de lecture renouvelé, repli sur la carte fichier si le format n'est pas lisible (story 54) |
-| `SettingsPanel.tsx` / `sounds.ts` | menu Paramètres ⚙ (Profil, Apparence, Notifications) ; non-lus synchronisés (badges, onglets, titre), sons Web Audio, « Tout couper », popups OS en option (stories 56-60, back-end `reads.rs`) |
-| `NotifyMenus.tsx` | réglages de notification par personne (clic droit, carte de profil : DM et mentions, notifier / son) et par salon (bouton 🔔 / clic droit : tous / mentions / rien, son) (story 63) |
-| `Login.tsx` / `AdminSettings.tsx` | connexion email + mot de passe, création de compte sur `?invite=`, mot de passe dans le profil ; onglet Administration : invitations (durée, liste, révocation) et liens de connexion de dépannage (stories 65-68, back-end `accounts.rs`) |
-| `lib/theme.ts` | thème Système / Clair / Sombre (story 55) : `User.theme`, poussé à ses autres connexions, copie locale appliquée par un script inline d'`index.html` avant le chargement ; palette sombre bleutée dans `index.css` |
-| `zip-folder.ts` | fichiers de tout type et dossiers compressés en ZIP par fflate (chargé à la demande) ; carte nom / taille / nombre de fichiers ; téléchargement natif par ticket (stories 51-53) |
-| `Composer.tsx` / `MessageBody.tsx` / `media.ts` | images (stories 27, 45-50) : barre de saisie riche (texte et miniatures mélangés, bouton, Ctrl+V, glisser-déposer, Maj+Entrée) ; une image = lien `/media/{id}` dans le texte ; vue en grand, copier le lien, enregistrer, supprimer ici / pour tout le monde. Back-end : `http.rs`, `media.rs` (fichiers `data/media/{sha256}`, quota `AUDIO_MEDIA_QUOTA_GIB`) |
-| `avatar-image.ts` | recadrage carré 256×256, WebP (repli JPEG) ≤ 256 Kio avant envoi |
+| `main.rs` (~1600 lignes, **à découper**) | dispatch des `ClientEnvelope`, auth (lien, session, mot de passe, invitation), salons, messages (envoi, sync paginée, modification, suppression), DM, profils, statut, thème |
+| `http.rs` | HTTP/1.1 sur le même port : requêtes accumulées, keep-alive, upgrade WS, `POST /media` (en flux), `GET /media/{id}` (Bearer ou ticket, `Range` → 206) |
+| `ws.rs` | frames WebSocket accumulées, plafond 1 Mio |
+| `registry.rs` | connexions : broadcast, envoi ciblé par utilisateur (DM), ping de toutes les connexions |
+| `presence.rs` | présence en mémoire, délais de 15 s (stories 23, 41-42) |
+| `reads.rs` | non-lus (`read:{user}:{conv}`, krange paginé plafonné à 100, mentions) et réglages de notification (`settings:{user}`) |
+| `accounts.rs` | mots de passe (bcrypt coût 6 + pepper HMAC), verrouillage 10 échecs / 15 min, invitations, liens de connexion |
+| `media.rs` | images / vidéos / sons / fichiers : reconnaissance par octets magiques, quota, déduplication, tickets de téléchargement et de lecture |
+| `codec.rs` | bincode strict ; relecture tolérante en debug |
+| `keys.rs`, `validate.rs`, `email.rs`, `persist.rs`, `proto.rs` | clés hex triables, validations, email, snapshot, code prost |
 
-URL du back-end : `VITE_BACK_END_URL`, défaut `wss://127.0.0.1:8443` (`src/lib/config.ts`).
-Un token de session refusé explicitement par le serveur est effacé ; une coupure réseau
-pendant l'auth le garde.
+Clés OxidArt : voir `architecture.md` § Modèle de données. Principes radix : préfixe
+dédié par famille (`dm:` hors de `channel:`, `user_dms:{moi}:`, `read:{moi}:`), listes
+et pages par `krange`, aucune écriture de notification à l'envoi d'un message (non-lus
+comptés à la connexion à partir du marqueur).
 
-Testé : le `ChatStore` piloté sous Node (chargé par Vite) contre le vrai serveur, deux
-clients, redémarrage serveur compris. **Le rendu dans un navigateur n'a pas encore été
-vérifié** (pas d'outil navigateur dans la session) : premier point à faire.
+Heartbeat (story 69) : ping serveur toutes les 15 s, connexion fermée après 45 s de
+silence ; client : `Heartbeat` toutes les 20 s, reconnexion sans réponse sous 10 s.
 
-## Prochaines étapes
+### Front (`front/src/chat/`)
 
-1. Vérifier le rendu dans le navigateur, ajuster l'UI.
-2. Quand le chemin HTTP des images existera (pièces jointes, story 27) : y basculer
-   les photos de profil (`GET /avatar/{id}?v={version}`) et retirer `GetAvatar`.
-3. Le serveur logge le token seul : logger un lien complet (`…/?token=`) suppose de
-   connaître l'URL publique du front (variable d'env), à trancher avec le service des
-   fichiers statiques par le binaire.
+| Fichier | Rôle |
+|---|---|
+| `store.ts` (~1000 lignes, à découper aussi) | `ChatStore` hors React : WS, auth, broadcasts, reconnexion, heartbeat, pages d'historique, médias, non-lus, notifications, admin |
+| `ChatView.tsx` | colonne Salons / Privé (badges, 🔔 par salon, clic droit), en-tête, membres, paramètres |
+| `ChannelFeed.tsx` | fil d'une conversation : pagination au scroll, réponse, modification, suppression confirmée, mentions surlignées |
+| `Composer.tsx` | saisie riche contenteditable : texte + médias + mentions (`@` autocomplétion), envoi d'images / fichiers / dossiers (ZIP) |
+| `MessageBody.tsx` | rendu du contenu : images (vue en grand), vidéo, audio, cartes fichier / dossier, pastilles de mention |
+| `media.ts` | analyse du contenu : `/media/{id}` et `<@id>` dans le texte |
+| `MembersPanel.tsx`, `ProfileCard.tsx`, `NotifyMenus.tsx` | membres par statut, carte de profil, menus de notification |
+| `SettingsPanel.tsx`, `ProfileSettings.tsx`, `AdminSettings.tsx` | Paramètres : Profil (photo, statut, pseudo, description, mot de passe), Apparence, Notifications, Administration |
+| `Login.tsx`, `PseudoScreen.tsx` | connexion email + mot de passe, inscription sur invitation, choix du pseudo |
+| `sounds.ts`, `zip-folder.ts`, `avatar-image.ts`, `session.ts`, `model.ts`, `lib/theme.ts` | sons Web Audio, ZIP fflate, recadrage avatar, localStorage / URL, types, thème |
 
-## Limites connues du serveur (non bloquantes en local)
+## Décisions marquantes du 2026-10-12 (détail dans les stories)
 
-- Écoute sur `127.0.0.1:8443` avec un cert auto-signé (`back-end/certs/`) : pas
-  encore d'ACME/TLS-ALPN-01 ni de port 443 public (le spike vit dans `spike-acme/`).
-- Requête HTTP d'upgrade lue en un seul `read` (4 Ko).
-- Frames WebSocket (`ws.rs`) : accumulées sur plusieurs lectures, plusieurs par
-  lecture ; plafond de transport 1 Mio par frame ; messages fragmentés (FIN=0) non
-  gérés (les navigateurs n'en envoient pas). Une frame invalide ferme la connexion.
-- Ping/pong et frames texte ignorés ; pas de heartbeat (CLAUDE.md : non tranché).
+- Présence remontée en v1 ; invisible mémorisé ; délais 15 s (stories 23, 41-42).
+- DM : livraison ciblée, invisibles pour l'admin (404), révélés au premier message.
+- Une image / un fichier = un lien `/media/{id}` dans le texte ; fichiers sur disque
+  par SHA-256 ; quota par personne ; auth des médias par `Authorization` (pas de
+  cookie, pour Tauri) ; tickets pour le téléchargement natif et la lecture vidéo.
+- Mentions `<@id>` ; un salon ne notifie que sur mention par défaut ; réglages par
+  personne et par salon (story 63) ; non-lus synchronisés côté serveur.
+- Comptes email + mot de passe sur invitation admin ; plus de lien en libre-service.
+- Historique paginé (64 messages, `krange` inversé).
+- Persistance bincode stricte en release, tolérante en debug.
+
+## Prochaines étapes (ordre recommandé, validé avec l'utilisateur)
+
+1. **Découper `main.rs`** (auth/comptes, messages, DM, profils, dispatch fin) — et
+   `store.ts` côté front — avant d'ajouter le vocal.
+2. **Déploiement** — *à discuter avant de coder* : port 443 public, ACME
+   TLS-ALPN-01 (spike dans `back-end/examples/acme_spike.rs` ; `spike-acme/` est vide), front servi par le
+   binaire (`rust-embed`, même origine, plus de proxy), port(s) UDP média pour
+   str0m (un seul démultiplexé ou une plage ?), IP publique pour l'ICE-lite.
+3. **Playwright** : vrais tests navigateur (login, message, image, DM ; plus tard
+   micro simulé) — remplacera `tests-e2e/`.
+4. **Salons vocaux** (stories 18-22, protocole `WebRtcOffer` = 22 déjà là, numéros
+   40+ réservés pour JoinVoice / LeaveVoice / IceCandidate).
+
+Ensuite / plus tard : mise en page mobile ; photos de profil par le chemin HTTP des
+médias (story 37) ; reprise de téléchargement par `Range` + checksum (story 53) ;
+envoi de très gros dossiers en flux ; nettoyage des médias orphelins (compteur de
+références, story 50) ; saves chiffrées côté oxidart ; AOF (durabilité entre deux
+saves) ; file d'envoi bornée (`TODO.md`).
+
+## Limites connues
+
+- Pas encore de 443 public / ACME ; cert auto-signé en dev.
+- Messages WebSocket fragmentés (FIN=0) non gérés (les navigateurs n'en envoient pas).
 - Un crash (pas un arrêt propre) perd au plus les 10 dernières secondes.
+- Un dossier envoyé est entièrement compressé en mémoire du navigateur avant l'envoi.
+- Une conversation créée après « Tout couper » n'est pas coupée (voulu).

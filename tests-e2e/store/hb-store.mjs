@@ -1,0 +1,23 @@
+import { execSync } from "node:child_process";
+const FRONT = "/home/joshua/rust/audio/front";
+const { createServer } = await import(FRONT + "/node_modules/vite/dist/node/index.js");
+const mem = new Map();
+globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+globalThis.window = { matchMedia: () => ({ matches: false, addEventListener() {} }), location: { origin: "x" }, addEventListener() {}, removeEventListener() {} };
+globalThis.document = { hidden: false, hasFocus: () => false, addEventListener() {}, removeEventListener() {}, documentElement: { classList: { toggle() {} }, style: {} } };
+const vite = await createServer({ root: FRONT, configFile: FRONT + "/vite.config.ts", server: { middlewareMode: true }, appType: "custom", logLevel: "error" });
+const { ChatStore } = await vite.ssrLoadModule("/src/chat/store.ts");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(f, what, ms) { for (let t = 0; t < ms; t += 100) { if (f()) return; await sleep(100); } console.log("ÉCHEC (timeout)", what); process.exit(1); }
+const ok = (c, m) => { if (!c) { console.log("ÉCHEC", m); process.exit(1); } console.log("ok", m); };
+const s = (x) => x.getSnapshot();
+const pid = process.argv[2];
+const A = new ChatStore("00000000-0000-0000-0000-000000000001"); A.start(); await until(() => s(A).phase === "pseudo", "A", 5000); await A.setPseudo("Léa");
+const t0 = Date.now();
+execSync(`kill -STOP ${pid}`);
+await until(() => s(A).phase === "offline", "détection", 35_000);
+ok(true, `serveur gelé (socket ouverte, plus de réponse) : détecté en ${Math.round((Date.now() - t0) / 1000)} s`);
+execSync(`kill -CONT ${pid}`);
+await until(() => s(A).phase === "ready", "reconnexion", 15_000);
+ok(true, "serveur revenu : reconnecté tout seul");
+A.dispose(); await vite.close(); process.exit(0);
