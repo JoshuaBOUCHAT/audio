@@ -1294,6 +1294,9 @@ fn sync_messages(
     let user_id = require_auth(user_id)?;
     let mut art = state.art.borrow_mut();
     load_conversation(&mut art, req.channel_id, user_id)?;
+    if req.limit > 0 {
+        return Ok(sync_page(&art, req.channel_id, req.before_id, req.limit));
+    }
     // Au-delà de la borne des clés, aucun message ne peut suivre `last_seen_id`.
     let messages = if keys::is_sortable(req.last_seen_id) {
         let prefix = keys::message_prefix(req.channel_id);
@@ -1310,7 +1313,36 @@ fn sync_messages(
     Ok(proto::SyncResponse {
         channel_id: req.channel_id,
         messages,
+        has_more: false,
     })
+}
+
+/// Au plus autant de messages par page (story 64).
+const MAX_PAGE: u32 = 200;
+
+/// Story 64 : les `limit` messages qui précèdent `before_id` (0 = les plus récents),
+/// par un `krange` inversé d'une entrée de plus — qui dit seulement s'il en reste.
+fn sync_page(art: &OxidArt, channel_id: u64, before_id: u64, limit: u32) -> proto::SyncResponse {
+    let limit = limit.min(MAX_PAGE) as usize;
+    let prefix = keys::message_prefix(channel_id);
+    let from = if before_id == 0 || !keys::is_sortable(before_id) {
+        Vec::new()
+    } else {
+        keys::message_key(channel_id, before_id).into_bytes()
+    };
+    let mut messages: Vec<proto::Message> = art
+        .krange(prefix.as_bytes(), &from, limit + 1, true)
+        .iter()
+        .map(|(_, val)| codec::decode(range_bytes(val, "message"), "message"))
+        .collect();
+    let has_more = messages.len() > limit;
+    messages.truncate(limit);
+    messages.reverse(); // du plus ancien au plus récent
+    proto::SyncResponse {
+        channel_id,
+        messages,
+        has_more,
+    }
 }
 
 /// Stories 13-14 : tombstone, pas de suppression physique — le contenu est effacé,
@@ -1376,5 +1408,32 @@ mod tests {
         art.set(SharedByte::from_str(&key), Value::String(SharedByte::from_str("7")));
         assert!(art.get(pseudo_index_key("Léa").as_bytes()).is_some());
         assert!(art.get(pseudo_index_key("Lea").as_bytes()).is_none());
+    }
+
+    #[test]
+    fn pages_d_historique() {
+        let mut art = OxidArt::new();
+        for id in 1..=150u64 {
+            let m = proto::Message {
+                id,
+                channel_id: 2,
+                content: format!("m{id}"),
+                ..Default::default()
+            };
+            save_message(&mut art, &m);
+        }
+        let ids = |r: &proto::SyncResponse| r.messages.iter().map(|m| m.id).collect::<Vec<_>>();
+        let last = sync_page(&art, 2, 0, 64);
+        assert_eq!(ids(&last), (87..=150).collect::<Vec<_>>());
+        assert!(last.has_more);
+        let before = sync_page(&art, 2, 87, 64);
+        assert_eq!(ids(&before), (23..=86).collect::<Vec<_>>());
+        let first = sync_page(&art, 2, 23, 64);
+        assert_eq!(ids(&first), (1..=22).collect::<Vec<_>>());
+        assert!(!first.has_more);
+        let all = sync_page(&art, 2, 0, 10_000); // plafonné à MAX_PAGE, ici 150 < 200
+        assert_eq!(all.messages.len(), 150);
+        assert!(!all.has_more);
+        assert!(sync_page(&art, 3, 0, 64).messages.is_empty(), "autre salon");
     }
 }

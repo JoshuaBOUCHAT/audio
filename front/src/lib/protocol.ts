@@ -38,6 +38,11 @@ export function editMessage(channelId: number, messageId: number, content: strin
   return { payload: "editMessage", editMessage: { channelId, messageId, content } };
 }
 
+/** Story 64 : les `limit` messages précédant `beforeId` (0 = les plus récents). */
+export function syncPage(channelId: number, beforeId: number, limit: number): ClientEnvelopeShape {
+  return { payload: "sync", sync: { channelId, beforeId, limit } };
+}
+
 /** `lastSeenId = 0` : resync complète du salon, à utiliser à la reconnexion (story 15). */
 export function syncRequest(channelId: number, lastSeenId: number): ClientEnvelopeShape {
   return { payload: "sync", sync: { channelId, lastSeenId } };

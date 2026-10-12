@@ -3,7 +3,7 @@
 // confirmée (story 38). Monté avec `key={conversationId}` : changer de conversation
 // remet à zéro le mode de saisie et le brouillon.
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { CornerUpRight, FolderUp, Paperclip, Pencil, Reply, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -46,13 +46,42 @@ export function ChannelFeed({
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
-  const count = messages?.length ?? 0
+  const history = state.history[conversationId]
+  const firstId = messages?.[0]?.id
+  const lastId = messages?.at(-1)?.id
+  /** Collé en bas : un nouveau message garde la vue en bas ; sinon on ne bouge pas. */
+  const atBottom = useRef(true)
+  /** Hauteur et position avant l'ajout d'une page au-dessus, pour ne pas faire sauter la lecture. */
+  const beforePrepend = useRef<{ height: number; top: number } | null>(null)
 
-  // Reste collé en bas à chaque nouveau message (pas encore d'historique paginé).
+  // Story 64 : une page plus ancienne s'insère au-dessus — on décale d'autant.
+  useLayoutEffect(() => {
+    const el = scroller.current
+    const before = beforePrepend.current
+    if (el && before) {
+      el.scrollTop = el.scrollHeight - before.height + before.top
+      beforePrepend.current = null
+    }
+  }, [firstId])
+
+  // Nouveau message en bas (ou première page) : on suit si on était en bas.
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight
+  }, [lastId])
+
+  function loadOlder() {
+    const el = scroller.current
+    if (!el || !history?.hasMore || history.loading) return
+    beforePrepend.current = { height: el.scrollHeight, top: el.scrollTop }
+    void store.loadOlder(conversationId)
+  }
+
+  // Page trop courte pour défiler : on charge la suivante sans attendre de scroll.
   useEffect(() => {
     const el = scroller.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [count])
+    if (el && el.scrollHeight <= el.clientHeight && history?.hasMore && !history.loading) loadOlder()
+  })
 
   const byId = new Map(messages?.map((m) => [m.id, m]))
   const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
@@ -75,7 +104,17 @@ export function ChannelFeed({
     setMode({ kind: "new" })
   }
 
-  function jumpTo(id: number) {
+  /** Story 39 ; story 64 : un original pas encore chargé l'est d'abord, page par page. */
+  async function jumpTo(id: number) {
+    if (!byId.has(id)) {
+      const el = scroller.current
+      if (el) beforePrepend.current = { height: el.scrollHeight, top: el.scrollTop }
+      if (!(await store.loadUntil(conversationId, id))) {
+        store.flash("Message d'origine introuvable")
+        return
+      }
+      await new Promise(requestAnimationFrame)
+    }
     document.getElementById(`message-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
     setFlash((f) => ({ id, nonce: (f?.nonce ?? 0) + 1 }))
   }
@@ -109,7 +148,24 @@ export function ChannelFeed({
       {!messages ? (
         <div className="flex-1 p-4 text-sm text-muted-foreground">Chargement…</div>
       ) : (
-        <div ref={scroller} className="flex-1 overflow-y-auto py-2">
+        <div
+          ref={scroller}
+          className="flex-1 overflow-y-auto py-2"
+          onScroll={(e) => {
+            const el = e.currentTarget
+            atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            if (el.scrollTop < 400) loadOlder()
+          }}
+        >
+          {history?.hasMore ? (
+            <div className="flex justify-center py-3 text-xs text-muted-foreground">
+              {history.loading ? "Chargement des messages précédents…" : ""}
+            </div>
+          ) : (
+            messages.length > 0 && (
+              <p className="px-4 pt-2 pb-4 text-xs text-muted-foreground">Début de la conversation.</p>
+            )
+          )}
           {messages.length === 0 && (
             <p className="px-4 text-sm text-muted-foreground">Pas encore de message. Lance la discussion.</p>
           )}
@@ -141,7 +197,7 @@ export function ChannelFeed({
                     state={state}
                     store={store}
                     pseudoOf={pseudoOf}
-                    onJump={() => jumpTo(m.replyToId)}
+                    onJump={() => void jumpTo(m.replyToId)}
                   />
                 )}
                 {!grouped && (
@@ -342,7 +398,18 @@ function ReplyQuote({
   onJump: () => void
 }) {
   if (!target) {
-    return <div className="mb-0.5 text-xs italic text-muted-foreground">↳ message d'origine non chargé</div>
+    // Story 64 : plus ancien que la page chargée — un clic le charge et y va.
+    return (
+      <button
+        type="button"
+        onClick={onJump}
+        className="mb-0.5 flex items-center gap-1.5 text-xs text-muted-foreground italic hover:text-foreground"
+        title="Charger et aller au message d'origine"
+      >
+        <CornerUpRight className="size-3.5 shrink-0" />
+        message plus ancien — cliquer pour y aller
+      </button>
+    )
   }
   return (
     <button

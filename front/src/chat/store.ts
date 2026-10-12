@@ -27,7 +27,7 @@ import {
   setTheme,
   setPseudo,
   setStatus,
-  syncRequest,
+  syncPage,
   type ClientEnvelopeShape,
   type ServerEnvelope,
 } from "@/lib/protocol"
@@ -101,6 +101,8 @@ export type ChatState = {
   toast: string | null
   /** Photos chargées : object URL de la version connue (story 36). */
   avatars: Record<number, { version: number; url: string }>
+  /** Story 64 : il reste des messages plus anciens à charger ; un chargement est en cours. */
+  history: Record<number, { hasMore: boolean; loading: boolean }>
   /** Messages par salon ; absent = salon jamais synchronisé. */
   messages: Record<number, ChatMessage[]>
   /** Dernière erreur à afficher (réponse Error du serveur ou échec réseau). */
@@ -122,11 +124,14 @@ const INITIAL: ChatState = {
   toast: null,
   avatars: {},
   messages: {},
+  history: {},
   error: null,
   linkSent: false,
 }
 
 const RECONNECT_MAX_MS = 10_000
+/** Story 64 : messages par page d'historique. */
+const PAGE_SIZE = 64
 
 /** Story 23 : vu par les autres. Pour soi, on suit son propre choix (story 41). */
 export function isShownOnline(state: ChatState, userId: number): boolean {
@@ -346,17 +351,45 @@ export class ChatStore {
     if (!(channelId in this.state.messages)) void this.sync(channelId)
   }
 
+  /**
+   * Story 64 : dernière page de la conversation. Elle **remplace** la copie locale (à
+   * la reconnexion aussi, story 15 : modifications et suppressions pendant la coupure
+   * prises en compte ; on remonte à nouveau si besoin). Un broadcast reçu avant cette
+   * réponse a été traité avant elle côté serveur (même file d'envoi), donc il y est
+   * déjà ; ceux qui suivent se fusionnent normalement.
+   */
   private async sync(channelId: number): Promise<void> {
-    const response = await this.request(syncRequest(channelId, 0))
+    const response = await this.request(syncPage(channelId, 0, PAGE_SIZE))
     const sync = response?.syncResponse
     if (!sync) return
-    // Resync depuis 0 = état complet du salon : il remplace la copie locale (pas de
-    // fusion, qui garderait des messages disparus du serveur). Un broadcast reçu avant
-    // cette réponse a été traité avant elle côté serveur (même file d'envoi), donc il
-    // y est déjà ; ceux qui suivent se fusionnent normalement.
     const synced = (sync.messages ?? []).map(toMessage)
     this.setMessages(channelId, () => synced)
+    this.set({ history: { ...this.state.history, [channelId]: { hasMore: sync.hasMore ?? false, loading: false } } })
     if (channelId === this.active) this.markActiveRead()
+  }
+
+  /** Story 64 : page précédente, avant le plus ancien message chargé. */
+  loadOlder = async (channelId: number): Promise<void> => {
+    const history = this.state.history[channelId]
+    const oldest = this.state.messages[channelId]?.[0]
+    if (!history?.hasMore || history.loading || !oldest) return
+    this.set({ history: { ...this.state.history, [channelId]: { ...history, loading: true } } })
+    const response = await this.request(syncPage(channelId, oldest.id, PAGE_SIZE))
+    const sync = response?.syncResponse
+    const hasMore = sync ? (sync.hasMore ?? false) : history.hasMore
+    if (sync) this.setMessages(channelId, (current) => mergeMessages(current, (sync.messages ?? []).map(toMessage)))
+    this.set({ history: { ...this.state.history, [channelId]: { hasMore, loading: false } } })
+  }
+
+  /** Story 64 : remonte page par page jusqu'à `messageId` (citation d'un original ancien). */
+  loadUntil = async (channelId: number, messageId: number): Promise<boolean> => {
+    for (let page = 0; page < 100; page++) {
+      const messages = this.state.messages[channelId]
+      if (messages?.some((m) => m.id === messageId)) return true
+      if (!this.state.history[channelId]?.hasMore || !messages?.length || messages[0].id < messageId) return false
+      await this.loadOlder(channelId)
+    }
+    return false
   }
 
   /** `replyToId` : message cité (story 39), 0 = pas une réponse. */
