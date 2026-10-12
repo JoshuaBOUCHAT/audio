@@ -941,7 +941,9 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hislab"
-version = "0.2.2"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec4b029b591de9d3af48355159ab8df39ae795fcf5743e37e55db7970a4cae35"
 dependencies = [
  "libc",
  "memmap2",
@@ -1341,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "oxidart"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -1556,7 +1558,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radixox-lib"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libmimalloc-sys",
  "mimalloc",
@@ -2209,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "valart"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "foldhash 0.2.0",
  "hislab",

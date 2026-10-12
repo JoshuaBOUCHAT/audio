@@ -111,8 +111,10 @@ async fn main() {
         );
     }
 
-    let listener = TcpListener::bind("127.0.0.1:8443").expect("bind :8443");
-    println!("en écoute sur https://127.0.0.1:8443 (cert auto-signé, le navigateur va alerter)");
+    // `AUDIO_LISTEN` : autre adresse que celle de dev, ex. un second serveur de test.
+    let listen = env::var("AUDIO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
+    let listener = TcpListener::bind(&listen).unwrap_or_else(|e| panic!("bind {listen}: {e}"));
+    println!("en écoute sur https://{listen} (cert auto-signé, le navigateur va alerter)");
 
     loop {
         let (stream, _addr) = match listener.accept().await {
