@@ -51,11 +51,14 @@ dev`. Compilés hors d'un build release (`#[cfg(debug_assertions)]`).
   encodage (un dump antérieur n'est plus relu correctement).
 - Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
 - Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
-- Persistance en bincode, gardée volontairement (2026-10-12) : un dump dont le schéma
-  ne correspond plus fait planter le chargement plutôt que d'être relu avec des
-  valeurs par défaut qui masqueraient une incohérence. En dev, après un changement de
-  `User`/`Channel`/`Message`, supprimer `data/dump.rxd`. Protobuf comme format de
-  stockage écarté pour cette raison.
+- Persistance en bincode, gardée volontairement (2026-10-12) : en **release**, un dump
+  dont le schéma ne correspond plus fait planter le chargement plutôt que d'être relu
+  avec des valeurs par défaut qui masqueraient une incohérence (protobuf écarté pour
+  cette raison). En **debug** (`codec.rs`), un champ ajouté en fin de type est relu
+  avec sa valeur par défaut et le dump est remis au schéma courant au démarrage :
+  plus besoin de supprimer `data/dump.rxd`. Règle : **un nouveau champ va toujours à
+  la fin** de son message (`StoredMedia` : `sha256` puis `meta`) ; retirer, déplacer
+  ou retyper un champ plante toujours.
 
 ## Client front (2026-10-12) — fonctionnel, pas encore relu visuellement
 

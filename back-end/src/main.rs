@@ -1,3 +1,4 @@
+mod codec;
 mod email;
 mod http;
 mod keys;
@@ -623,7 +624,7 @@ fn session_user(art: &mut OxidArt, token: Uuid) -> Option<u64> {
 }
 
 fn save_user(art: &mut OxidArt, user: &proto::User) {
-    let encoded = bincode::serialize(user).expect("sérialisation User");
+    let encoded = codec::encode(user);
     art.set(
         SharedByte::from_str(&format!("user:{}", user.id)),
         Value::String(SharedByte::from_slice(encoded)),
@@ -645,8 +646,7 @@ fn list_profiles(art: &OxidArt) -> Vec<proto::UserProfile> {
     art.krange(b"user:", b"", usize::MAX, false)
         .iter()
         .map(|(_, val)| {
-            bincode::deserialize::<proto::User>(range_bytes(val, "user:{id}"))
-                .expect("user:{id} corrompu")
+            codec::decode::<proto::User>(range_bytes(val, "user:{id}"), "user:{id}")
         })
         .filter(|u| !u.pseudo.is_empty())
         .map(|u| profile(&u))
@@ -840,10 +840,7 @@ fn get_avatar(
     let user_bytes = art
         .get(format!("user:{}", req.user_id).as_bytes())
         .ok_or_else(not_found)?;
-    let user: proto::User = bincode::deserialize(
-        user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
-    )
-    .expect("user:{id} corrompu");
+    let user: proto::User = codec::decode(user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(), "user:{id}");
     if user.avatar_version == 0 {
         return Err(not_found());
     }
@@ -868,10 +865,7 @@ fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
     let user_bytes = art
         .get(format!("user:{id}").as_bytes())
         .expect("référence vers user:{id} inexistant — invariant violé");
-    bincode::deserialize(
-        user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
-    )
-    .expect("user:{id} corrompu")
+    codec::decode(user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(), "user:{id}")
 }
 
 /// Story 8 : tous les salons sont visibles par tout le monde. Les DM vivent sous
@@ -880,8 +874,7 @@ fn list_channels(art: &OxidArt) -> Vec<proto::Channel> {
     art.krange(keys::CHANNEL_PREFIX.as_bytes(), b"", usize::MAX, false)
         .iter()
         .map(|(_, val)| {
-            bincode::deserialize::<proto::Channel>(range_bytes(val, "channel:{id}"))
-                .expect("channel:{id} corrompu")
+            codec::decode::<proto::Channel>(range_bytes(val, "channel:{id}"), "channel:{id}")
         })
         .collect()
 }
@@ -915,8 +908,7 @@ fn parse_id(bytes: &[u8]) -> u64 {
 /// violé.
 fn load_dm(art: &mut OxidArt, id: u64) -> proto::Channel {
     let val = art.get(keys::dm_key(id).as_bytes()).expect("user_dms → dm:{id} inexistant");
-    bincode::deserialize(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice())
-        .expect("dm:{id} corrompu")
+    codec::decode(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice(), "dm:{id}")
 }
 
 fn conversation(art: &OxidArt, channel: proto::Channel) -> proto::Conversation {
@@ -963,10 +955,7 @@ fn open_dm(
     let other_user = art
         .get(format!("user:{other}").as_bytes())
         .map(|val| {
-            bincode::deserialize::<proto::User>(
-                val.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
-            )
-            .expect("user:{id} corrompu")
+            codec::decode::<proto::User>(val.as_bytes().expect("user:{id} toujours Value::String").as_slice(), "user:{id}")
         })
         .ok_or_else(unknown)?;
     if other_user.pseudo.is_empty() {
@@ -994,7 +983,7 @@ fn open_dm(
                 r#type: proto::channel::Type::Dm as i32,
                 participant_ids: vec![user_id, other],
             };
-            let encoded = bincode::serialize(&channel).expect("sérialisation Channel");
+            let encoded = codec::encode(&channel);
             art.set(
                 SharedByte::from_str(&keys::dm_key(id)),
                 Value::String(SharedByte::from_slice(encoded)),
@@ -1060,7 +1049,7 @@ fn create_channel(
         r#type: proto::channel::Type::Text as i32,
         participant_ids: vec![],
     };
-    let encoded = bincode::serialize(&channel).expect("sérialisation Channel");
+    let encoded = codec::encode(&channel);
     art.set(
         SharedByte::from_str(&keys::channel_key(id)),
         Value::String(SharedByte::from_slice(encoded)),
@@ -1098,8 +1087,7 @@ fn load_conversation(
         return Err(unknown());
     };
     let dm: proto::Channel =
-        bincode::deserialize(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice())
-            .expect("dm:{id} corrompu");
+        codec::decode(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice(), "dm:{id}");
     match dm.participant_ids[..] {
         [a, b] if a == user_id || b == user_id => Ok(Audience::Participants([a, b])),
         _ => Err(unknown()),
@@ -1107,10 +1095,7 @@ fn load_conversation(
 }
 
 fn decode_message(val: &Value) -> proto::Message {
-    bincode::deserialize(
-        val.as_bytes().expect("message toujours Value::String").as_slice(),
-    )
-    .expect("message corrompu")
+    codec::decode(val.as_bytes().expect("message toujours Value::String").as_slice(), "message")
 }
 
 struct Sent {
@@ -1189,7 +1174,7 @@ fn now_ms() -> u64 {
 }
 
 fn save_message(art: &mut OxidArt, message: &proto::Message) {
-    let encoded = bincode::serialize(message).expect("sérialisation Message");
+    let encoded = codec::encode(message);
     art.set(
         SharedByte::from_str(&keys::message_key(message.channel_id, message.id)),
         Value::String(SharedByte::from_slice(encoded)),
@@ -1266,7 +1251,7 @@ fn sync_messages(
         art.krange(prefix.as_bytes(), from.as_bytes(), usize::MAX, false)
             .iter()
             .map(|(_, val)| {
-                bincode::deserialize(range_bytes(val, "message")).expect("message corrompu")
+                codec::decode(range_bytes(val, "message"), "message")
             })
             .collect()
     } else {

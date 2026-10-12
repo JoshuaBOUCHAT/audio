@@ -28,10 +28,12 @@ pub const MAX_SIDE: u32 = 16_384;
 /// porter de longues métadonnées EXIF avant ses dimensions).
 pub const PROBE_LEN: usize = 1 << 20;
 
+/// `sha256` d'abord, `meta` en dernier : les champs ajoutés à `Media` tombent en fin
+/// d'encodage, relisibles en debug (`codec`).
 #[derive(Serialize, Deserialize)]
 pub struct StoredMedia {
-    pub meta: proto::Media,
     pub sha256: String,
+    pub meta: proto::Media,
 }
 
 /// Dossier des images et quota par personne (story 48), fixés au lancement.
@@ -139,7 +141,7 @@ pub fn reserve_file(art: &mut OxidArt, sha256: &str) -> bool {
 }
 
 pub fn record(art: &mut OxidArt, stored: &StoredMedia) {
-    let encoded = bincode::serialize(stored).expect("sérialisation StoredMedia");
+    let encoded = crate::codec::encode(stored);
     art.set(
         SharedByte::from_str(&media_key(&stored.meta.id)),
         Value::String(SharedByte::from_slice(encoded)),
@@ -154,8 +156,7 @@ pub fn record(art: &mut OxidArt, stored: &StoredMedia) {
 pub fn load(art: &mut OxidArt, id: &str) -> Option<StoredMedia> {
     let val = art.get(media_key(id).as_bytes())?;
     Some(
-        bincode::deserialize(val.as_bytes().expect("media:{id} toujours Value::String").as_slice())
-            .expect("media:{id} corrompu"),
+        crate::codec::decode(val.as_bytes().expect("media:{id} toujours Value::String").as_slice(), "media:{id}"),
     )
 }
 

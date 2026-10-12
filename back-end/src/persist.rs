@@ -61,6 +61,8 @@ pub fn load_at_startup(art: &SharedArt) -> io::Result<()> {
         stats.expired,
         start.elapsed()
     );
+    #[cfg(debug_assertions)]
+    crate::codec::upgrade_dev(&mut art);
     Ok(())
 }
 
