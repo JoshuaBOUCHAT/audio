@@ -48,6 +48,16 @@ export function openDm(userId: number): ClientEnvelopeShape {
   return { payload: "openDm", openDm: { userId } };
 }
 
+/** Story 56 : tout jusqu'à `messageId` compris est lu. */
+export function markRead(channelId: number, messageId: number): ClientEnvelopeShape {
+  return { payload: "markRead", markRead: { channelId, messageId } };
+}
+
+/** Stories 57-60 : remplace tous mes réglages de notification. */
+export function setSettings(settings: chat.Settings.$Properties): ClientEnvelopeShape {
+  return { payload: "setSettings", setSettings: { settings } };
+}
+
 /** Story 55 : thème mémorisé avec le compte. */
 export function setTheme(theme: chat.Theme): ClientEnvelopeShape {
   return { payload: "setTheme", setTheme: { theme } };

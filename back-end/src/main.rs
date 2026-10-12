@@ -5,6 +5,7 @@ mod keys;
 mod media;
 mod persist;
 mod presence;
+mod reads;
 mod proto;
 mod registry;
 mod validate;
@@ -369,6 +370,45 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::MarkRead(req)) => {
+            let marked = require_auth(*user_id).and_then(|me| {
+                let mut art = state.art.borrow_mut();
+                load_conversation(&mut art, req.channel_id, me)?;
+                let last = reads::mark_read(&mut art, me, req.channel_id, req.message_id.min(keys::MAX_ID));
+                state.dirty.set(true);
+                Ok((me, last))
+            });
+            match marked {
+                Ok((me, last_read_id)) => {
+                    let marked = proto::server_envelope::Payload::ReadMarked(proto::ReadMarked {
+                        channel_id: req.channel_id,
+                        last_read_id,
+                    });
+                    // Story 56 : mes autres appareils effacent aussi le badge.
+                    registry::send_to_users(&state.registry, &[me], Some(conn), &event(marked.clone()));
+                    marked
+                }
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
+        Some(Payload::SetSettings(req)) => {
+            let saved = require_auth(*user_id).and_then(|me| {
+                let settings = req.settings.unwrap_or_default();
+                let saved = reads::set_settings(&mut state.art.borrow_mut(), me, settings)?;
+                state.dirty.set(true);
+                Ok((me, saved))
+            });
+            match saved {
+                Ok((me, settings)) => {
+                    let set = proto::server_envelope::Payload::SettingsSet(proto::SettingsSet {
+                        settings: Some(settings),
+                    });
+                    registry::send_to_users(&state.registry, &[me], Some(conn), &event(set.clone()));
+                    set
+                }
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
         Some(Payload::SetPseudo(req)) => match set_pseudo(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -598,6 +638,14 @@ fn handle_auth(
     let channels = list_channels(&art);
     let users = list_profiles(&art);
     let dms = list_dms(&mut art, user.id);
+    // Story 56 : non-lus de chaque conversation visible.
+    let unread = channels
+        .iter()
+        .map(|c| c.id)
+        .chain(dms.iter().filter_map(|d| d.channel.as_ref().map(|c| c.id)))
+        .map(|id| reads::unread(&mut art, user.id, id))
+        .collect();
+    let settings = Some(reads::settings(&mut art, user.id));
     Ok(proto::AuthResponse {
         me: Some(user),
         channels,
@@ -605,6 +653,8 @@ fn handle_auth(
         users,
         online_user_ids: Vec::new(), // rempli par l'appelant, après `presence::connected`
         dms,
+        unread,
+        settings,
     })
 }
 

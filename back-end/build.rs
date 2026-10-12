@@ -16,6 +16,14 @@ fn main() {
             "chat.Media",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
+        .type_attribute(
+            "chat.Settings",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "chat.NotificationRule",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
         .compile_protos(&["../proto/messages.proto"], &["../proto/"])
         .unwrap();
 }

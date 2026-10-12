@@ -12,6 +12,8 @@
 
 pub const SORTABLE_ID_LEN: usize = 9;
 const MAX_SORTABLE_ID: u64 = (1 << (4 * SORTABLE_ID_LEN)) - 1;
+/// Plus grand id qui tienne dans une clé (borne d'un id venu du client).
+pub const MAX_ID: u64 = MAX_SORTABLE_ID;
 
 /// Vrai si `id` tient dans une clé. Les ids venus du client doivent passer par ici
 /// avant `channel_key` / `message_key` : un id hors borne ne peut désigner aucune
