@@ -23,7 +23,7 @@ pub type SharedRegistry = Rc<RefCell<Registry>>;
 
 /// Clé générationnelle : une `ConnId` d'une connexion fermée ne désigne jamais la
 /// connexion qui réutilise son emplacement.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnId(Key);
 
 struct Conn {
@@ -84,13 +84,23 @@ pub fn send(registry: &SharedRegistry, id: ConnId, frame: &[u8]) {
 /// authentifiées sauf `except` — l'émetteur reçoit déjà sa réponse directe, avec son
 /// `request_id`.
 pub fn broadcast(registry: &SharedRegistry, except: ConnId, frame: &[u8]) {
+    broadcast_except(registry, Some(except), frame);
+}
+
+/// Événement sans émetteur (ex. présence annoncée après un délai) : à toutes les
+/// connexions authentifiées.
+pub fn broadcast_all(registry: &SharedRegistry, frame: &[u8]) {
+    broadcast_except(registry, None, frame);
+}
+
+fn broadcast_except(registry: &SharedRegistry, except: Option<ConnId>, frame: &[u8]) {
     let targets: Vec<ConnId> = {
         let mut reg = registry.borrow_mut();
         let Registry { conns, authenticated } = &mut *reg;
         authenticated
             .iter()
             .copied()
-            .filter(|&id| id != except)
+            .filter(|&id| Some(id) != except)
             .inspect(|id| {
                 if let Some(conn) = conns.get_mut(id.0) {
                     conn.pending.extend_from_slice(frame);

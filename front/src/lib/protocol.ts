@@ -43,6 +43,11 @@ export function syncRequest(channelId: number, lastSeenId: number): ClientEnvelo
   return { payload: "sync", sync: { channelId, lastSeenId } };
 }
 
+/** Story 41 : En ligne ou Invisible (mémorisé avec le compte). */
+export function setStatus(status: chat.Status): ClientEnvelopeShape {
+  return { payload: "setStatus", setStatus: { status } };
+}
+
 export function setPseudo(pseudo: string): ClientEnvelopeShape {
   return { payload: "setPseudo", setPseudo: { pseudo } };
 }

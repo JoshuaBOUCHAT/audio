@@ -1,12 +1,13 @@
 mod email;
 mod keys;
 mod persist;
+mod presence;
 mod proto;
 mod registry;
 mod validate;
 mod ws;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::env;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use uuid::Uuid;
 
 use email::Email;
+use presence::{Presence, SharedPresence};
 use registry::{ConnId, SharedRegistry, TlsStream};
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -47,6 +49,7 @@ struct AppState {
     /// Levé par chaque mutation métier, remis à zéro par la save périodique
     /// (oxidart ne compte pas les modifications).
     dirty: Rc<Cell<bool>>,
+    presence: SharedPresence,
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -102,6 +105,7 @@ async fn main() {
         bootstrap_admin_email,
         registry: SharedRegistry::default(),
         dirty,
+        presence: Rc::new(RefCell::new(Presence::from_env())),
     };
 
     if cfg!(debug_assertions) {
@@ -220,6 +224,7 @@ async fn handle_ws_connection(tls: TlsStream, state: AppState) {
     let conn = state.registry.borrow_mut().insert(write);
     read_loop(read, conn, &state).await;
     state.registry.borrow_mut().remove(conn);
+    presence::disconnected(&state.presence, &state.registry, conn);
     println!("[ws] connexion terminée");
 }
 
@@ -302,8 +307,17 @@ fn handle_client_envelope(
         },
         Some(Payload::Auth(req)) => match validate::validate_auth_request(req) {
             Ok(valid) => match handle_auth(valid.token, state, user_id) {
-                Ok(response) => {
+                Ok(mut response) => {
                     state.registry.borrow_mut().mark_authenticated(conn);
+                    let me = response.me.as_ref().expect("AuthResponse.me toujours rempli");
+                    presence::connected(
+                        &state.presence,
+                        &state.registry,
+                        conn,
+                        me.id,
+                        me.status() == proto::Status::Invisible,
+                    );
+                    response.online_user_ids = state.presence.borrow().online_ids();
                     proto::server_envelope::Payload::AuthResponse(response)
                 }
                 Err(err) => proto::server_envelope::Payload::Error(err),
@@ -375,6 +389,20 @@ fn handle_client_envelope(
                 };
                 registry::broadcast(&state.registry, conn, &server_frame(&event));
                 edited
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::SetStatus(req)) => match set_status(req, state, *user_id) {
+            Ok(status) => {
+                presence::status_changed(
+                    &state.presence,
+                    &state.registry,
+                    user_id.expect("set_status exige l'auth"),
+                    status == proto::Status::Invisible,
+                );
+                proto::server_envelope::Payload::StatusSet(proto::StatusSet {
+                    status: status as i32,
+                })
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
@@ -509,6 +537,7 @@ fn handle_auth(
                     is_admin,
                     pseudo: String::new(),
                     avatar_version: 0,
+                    status: proto::Status::Online as i32,
                 };
                 save_user(&mut art, &user);
                 art.set(
@@ -547,6 +576,7 @@ fn handle_auth(
         channels,
         session_token: session_token.to_string(),
         users,
+        online_user_ids: Vec::new(), // rempli par l'appelant, après `presence::connected`
     })
 }
 
@@ -631,6 +661,26 @@ fn set_pseudo(
     save_user(&mut art, &user);
     state.dirty.set(true);
     Ok(profile(&user))
+}
+
+/// Story 41 : statut choisi, mémorisé avec le compte. Un numéro de statut inconnu
+/// (client plus récent) est refusé plutôt que ramené à En ligne.
+fn set_status(
+    req: proto::SetStatus,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Status, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let status = proto::Status::try_from(req.status).map_err(|_| proto::Error {
+        code: 400,
+        message: "statut inconnu".to_string(),
+    })?;
+    let mut art = state.art.borrow_mut();
+    let mut user = load_user(&mut art, user_id);
+    user.set_status(status);
+    save_user(&mut art, &user);
+    state.dirty.set(true);
+    Ok(status)
 }
 
 /// Story 37 : nouvelle photo (version = id tiré du compteur global, change à chaque
