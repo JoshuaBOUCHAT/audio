@@ -1,17 +1,19 @@
 // Vue principale : liste des salons (création si admin, story 7) + fil du salon
-// sélectionné (stories 10-14). Les auteurs sont affichés par id : le protocole v1 ne
-// transmet pas les autres utilisateurs (seul `me` est connu).
+// sélectionné (stories 10-14), auteurs par pseudo et photo (story 36).
 
 import { useEffect, useRef, useState } from "react"
 import { Hash, LogOut, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import type { ChatMessage, Me } from "./model"
+import { Avatar } from "./Avatar"
+import type { ChatMessage } from "./model"
+import { ProfilePanel } from "./ProfilePanel"
 import type { ChatState, ChatStore } from "./store"
 
 export function ChatView({ state, store }: { state: ChatState; store: ChatStore }) {
   const [selected, setSelected] = useState<number | null>(null)
+  const [profileOpen, setProfileOpen] = useState(false)
   const me = state.me!
   // Salon affiché : le choix de l'utilisateur s'il existe encore, sinon le premier.
   const channelId = state.channels.some((c) => c.id === selected)
@@ -51,11 +53,19 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
             </p>
           )}
         </nav>
-        <div className="flex items-center gap-2 border-t p-2">
-          <span className="min-w-0 flex-1 truncate text-sm" title={me.email}>
-            {me.email}
-            {me.isAdmin && <span className="ml-1 text-xs text-muted-foreground">(admin)</span>}
-          </span>
+        <div className="flex items-center gap-1 border-t p-2">
+          <button
+            type="button"
+            onClick={() => setProfileOpen(true)}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted"
+            title="Modifier le profil"
+          >
+            <Avatar userId={me.id} state={state} store={store} className="size-8" />
+            <span className="min-w-0 truncate text-sm font-medium">
+              {me.pseudo}
+              {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
+            </span>
+          </button>
           <Button variant="ghost" size="icon-sm" onClick={store.logout} title="Se déconnecter">
             <LogOut />
           </Button>
@@ -86,7 +96,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 
         {channel ? (
           <>
-            <MessageList me={me} messages={state.messages[channel.id]} store={store} />
+            <MessageList state={state} messages={state.messages[channel.id]} store={store} />
             <Composer
               key={channel.id}
               channelName={channel.name}
@@ -100,6 +110,8 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
           </div>
         )}
       </main>
+
+      {profileOpen && <ProfilePanel state={state} store={store} onClose={() => setProfileOpen(false)} />}
     </div>
   )
 }
@@ -141,14 +153,15 @@ function CreateChannel({ store }: { store: ChatStore }) {
 }
 
 function MessageList({
-  me,
+  state,
   messages,
   store,
 }: {
-  me: Me
+  state: ChatState
   messages: ChatMessage[] | undefined
   store: ChatStore
 }) {
+  const me = state.me!
   const scroller = useRef<HTMLDivElement>(null)
   const count = messages?.length ?? 0
 
@@ -170,11 +183,14 @@ function MessageList({
         const grouped = i > 0 && messages[i - 1].userId === m.userId && !messages[i - 1].deleted
         const canDelete = !m.deleted && (m.userId === me.id || me.isAdmin)
         return (
-          <div key={m.id} className={cn("group relative px-4 hover:bg-muted/50", !grouped && "mt-2 pt-1")}>
+          <div key={m.id} className={cn("group relative py-0.5 pr-12 pl-16 hover:bg-muted/50", !grouped && "mt-3")}>
+            {!grouped && (
+              <Avatar userId={m.userId} state={state} store={store} className="absolute top-1 left-4" />
+            )}
             {!grouped && (
               <div className="flex items-baseline gap-2">
                 <span className="text-sm font-semibold">
-                  {m.userId === me.id ? "Vous" : `Utilisateur #${m.userId}`}
+                  {state.users[m.userId]?.pseudo ?? `Utilisateur #${m.userId}`}
                 </span>
                 <time className="text-xs text-muted-foreground" dateTime={new Date(m.timestamp).toISOString()}>
                   {formatTime(m.timestamp)}

@@ -58,6 +58,8 @@ Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique
 | `session.ts` | `session_token` en `localStorage` (try/catch), token de lien magique lu dans `?token=` puis retiré de l'URL |
 | `model.ts` | conversion proto → types d'affichage (`Long` → number), fusion des messages par id |
 | `Login.tsx` / `ChatView.tsx` | login (email, puis lien ou token collé) ; salons + fil + saisie, suppression au survol (auteur ou admin), création de salon (admin) |
+| `PseudoScreen.tsx` / `ProfilePanel.tsx` / `Avatar.tsx` | pseudo obligatoire avant le chat (story 34) ; profil : pseudo, photo (stories 35, 37) ; photo ou initiale, chargée à la demande et mise en cache par version (story 36) |
+| `avatar-image.ts` | recadrage carré 256×256, WebP (repli JPEG) ≤ 256 Kio avant envoi |
 
 URL du back-end : `VITE_BACK_END_URL`, défaut `wss://127.0.0.1:8443` (`src/lib/config.ts`).
 Un token de session refusé explicitement par le serveur est effacé ; une coupure réseau
@@ -70,8 +72,8 @@ vérifié** (pas d'outil navigateur dans la session) : premier point à faire.
 ## Prochaines étapes
 
 1. Vérifier le rendu dans le navigateur, ajuster l'UI.
-2. Noms des auteurs : le protocole ne transmet que `me` ; les autres auteurs
-   s'affichent « Utilisateur #id ». Touche au protocole → user story d'abord.
+2. Quand le chemin HTTP des images existera (pièces jointes, story 27) : y basculer
+   les photos de profil (`GET /avatar/{id}?v={version}`) et retirer `GetAvatar`.
 3. Le serveur logge le token seul : logger un lien complet (`…/?token=`) suppose de
    connaître l'URL publique du front (variable d'env), à trancher avec le service des
    fichiers statiques par le binaire.

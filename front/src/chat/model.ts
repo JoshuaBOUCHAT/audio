@@ -5,7 +5,9 @@
 import type Long from "long"
 import { chat } from "@/proto/messages.js"
 
-export type Me = { id: number; email: string; isAdmin: boolean }
+export type Me = { id: number; email: string; isAdmin: boolean; pseudo: string; avatarVersion: number }
+/** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
+export type Profile = { id: number; pseudo: string; avatarVersion: number }
 export type ChatChannel = { id: number; name: string }
 export type ChatMessage = {
   id: number
@@ -22,7 +24,21 @@ export function toNumber(value: number | Long | null | undefined): number {
 }
 
 export function toMe(user: chat.IUser | null | undefined): Me {
-  return { id: toNumber(user?.id), email: user?.email ?? "", isAdmin: user?.isAdmin ?? false }
+  return {
+    id: toNumber(user?.id),
+    email: user?.email ?? "",
+    isAdmin: user?.isAdmin ?? false,
+    pseudo: user?.pseudo ?? "",
+    avatarVersion: toNumber(user?.avatarVersion),
+  }
+}
+
+export function toProfile(profile: chat.IUserProfile): Profile {
+  return {
+    id: toNumber(profile.id),
+    pseudo: profile.pseudo ?? "",
+    avatarVersion: toNumber(profile.avatarVersion),
+  }
 }
 
 /** Seuls les salons texte sont affichés : DM et vocal n'existent pas encore côté v1. */

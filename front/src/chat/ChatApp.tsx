@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react"
 import { BACK_END_URL } from "@/lib/config"
 import { ChatView } from "./ChatView"
 import { Login } from "./Login"
+import { PseudoScreen } from "./PseudoScreen"
 import { takeMagicLinkToken } from "./session"
 import { ChatStore } from "./store"
 
@@ -14,6 +15,9 @@ export function ChatApp() {
     return () => store.dispose()
   }, [store])
 
+  if (state.me && !state.me.pseudo && state.phase !== "authenticating") {
+    return <PseudoScreen state={state} store={store} />
+  }
   if (state.me && (state.phase === "ready" || state.phase === "offline")) {
     return <ChatView state={state} store={store} />
   }

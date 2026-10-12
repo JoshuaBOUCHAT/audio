@@ -12,8 +12,11 @@ import {
   authRequest,
   createChannel,
   deleteMessage,
+  getAvatar,
   requestMagicLink,
   sendMessage,
+  setAvatar,
+  setPseudo,
   syncRequest,
   type ClientEnvelopeShape,
   type ServerEnvelope,
@@ -25,9 +28,11 @@ import {
   toMe,
   toMessage,
   toNumber,
+  toProfile,
   type ChatChannel,
   type ChatMessage,
   type Me,
+  type Profile,
 } from "./model"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
 
@@ -36,12 +41,17 @@ export type Phase =
   | "login" // connecté, pas de session : écran de login
   | "authenticating" // AuthRequest envoyé
   | "ready"
+  | "pseudo" // authentifié sans pseudo : choix obligatoire (story 34)
   | "offline" // WS fermé, reconnexion programmée (story 17)
 
 export type ChatState = {
   phase: Phase
   me: Me | null
   channels: ChatChannel[]
+  /** Profils publics par id (story 36), `me` compris. */
+  users: Record<number, Profile>
+  /** Photos chargées : object URL de la version connue (story 36). */
+  avatars: Record<number, { version: number; url: string }>
   /** Messages par salon ; absent = salon jamais synchronisé. */
   messages: Record<number, ChatMessage[]>
   /** Dernière erreur à afficher (réponse Error du serveur ou échec réseau). */
@@ -54,6 +64,8 @@ const INITIAL: ChatState = {
   phase: "connecting",
   me: null,
   channels: [],
+  users: {},
+  avatars: {},
   messages: {},
   error: null,
   linkSent: false,
@@ -71,6 +83,8 @@ export class ChatStore {
   private disposed = false
   /** Token de lien magique lu dans l'URL, consommé à la première connexion. */
   private pendingMagicToken: string | null
+  /** Clés `id:version` des photos en cours de chargement. */
+  private readonly avatarRequests = new Set<string>()
 
   constructor(magicToken: string | null) {
     this.pendingMagicToken = magicToken
@@ -191,9 +205,13 @@ export class ChatStore {
     }
     saveSessionToken(auth.sessionToken ?? "")
     const loaded = Object.keys(this.state.messages).map(Number)
+    const me = toMe(auth.me)
+    const users: Record<number, Profile> = {}
+    for (const p of auth.users ?? []) users[toNumber(p.id)] = toProfile(p)
     this.set({
-      phase: "ready",
-      me: toMe(auth.me),
+      phase: me.pseudo ? "ready" : "pseudo",
+      me,
+      users,
       channels: (auth.channels ?? []).filter(isTextChannel).map(toChannel),
       linkSent: false,
     })
@@ -203,6 +221,7 @@ export class ChatStore {
 
   logout = (): void => {
     clearSessionToken()
+    for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
     // La connexion reste authentifiée côté serveur : on repart d'un WS vierge.
     this.state = INITIAL
     this.socket?.close()
@@ -242,6 +261,70 @@ export class ChatStore {
     return true
   }
 
+  /** Stories 34-35. `true` si accepté ; sinon l'erreur (409 : pris) est dans `error`. */
+  setPseudo = async (pseudo: string): Promise<boolean> => {
+    this.set({ error: null })
+    const response = await this.request(setPseudo(pseudo))
+    const profile = response?.userUpdated?.profile
+    if (!profile) return false
+    this.applyProfile(toProfile(profile))
+    return true
+  }
+
+  /** Story 37 : image déjà réduite (cf. avatar-image.ts) ; vide = retirer la photo. */
+  setAvatar = async (image: Uint8Array): Promise<boolean> => {
+    this.set({ error: null })
+    const response = await this.request(setAvatar(image))
+    const profile = response?.userUpdated?.profile
+    if (!profile) return false
+    this.applyProfile(toProfile(profile))
+    return true
+  }
+
+  /**
+   * Charge la photo d'un utilisateur si la version connue n'est pas encore en cache.
+   * Appelé au rendu de chaque avatar : idempotent, une seule requête par version.
+   */
+  ensureAvatar = (userId: number): void => {
+    const version = this.state.users[userId]?.avatarVersion ?? 0
+    if (version === 0 || this.state.avatars[userId]?.version === version) return
+    const key = `${userId}:${version}`
+    if (this.avatarRequests.has(key) || !this.client) return
+    this.avatarRequests.add(key)
+    void this.client
+      .request(getAvatar(userId))
+      .then((response) => {
+        const avatar = response.avatar
+        if (!avatar?.image) return
+        const loaded = toNumber(avatar.avatarVersion)
+        // Une version plus récente a pu arriver entre-temps : on garde la plus récente.
+        if ((this.state.avatars[userId]?.version ?? 0) >= loaded) return
+        const previous = this.state.avatars[userId]
+        if (previous) URL.revokeObjectURL(previous.url)
+        // Type laissé vide : le navigateur reconnaît PNG/JPEG/WebP à leurs octets.
+        const url = URL.createObjectURL(new Blob([avatar.image as Uint8Array<ArrayBuffer>]))
+        this.set({ avatars: { ...this.state.avatars, [userId]: { version: loaded, url } } })
+      })
+      .catch(() => {}) // WS fermé : rechargée au prochain rendu après reconnexion
+      .finally(() => this.avatarRequests.delete(key))
+  }
+
+  private applyProfile(profile: Profile): void {
+    const users = { ...this.state.users, [profile.id]: profile }
+    const me = this.state.me
+    if (me && me.id === profile.id) {
+      const updated = { ...me, pseudo: profile.pseudo, avatarVersion: profile.avatarVersion }
+      this.set({ users, me: updated, phase: this.state.phase === "pseudo" ? "ready" : this.state.phase })
+    } else {
+      this.set({ users })
+    }
+    if (profile.avatarVersion === 0 && this.state.avatars[profile.id]) {
+      const { [profile.id]: removed, ...avatars } = this.state.avatars
+      URL.revokeObjectURL(removed.url)
+      this.set({ avatars })
+    }
+  }
+
   // --- broadcasts ---
 
   private onEvent(envelope: ServerEnvelope): void {
@@ -252,6 +335,11 @@ export class ChatStore {
       case "messageDeleted": {
         const d = envelope.messageDeleted
         if (d) this.markDeleted(toNumber(d.channelId), toNumber(d.messageId))
+        break
+      }
+      case "userUpdated": {
+        const profile = envelope.userUpdated?.profile
+        if (profile) this.applyProfile(toProfile(profile))
         break
       }
       case "channelCreated": {
