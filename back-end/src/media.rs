@@ -211,6 +211,35 @@ pub fn sniff_video(probe: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Story 61 : son lisible par le lecteur du navigateur, reconnu à ses octets magiques.
+pub fn sniff_audio(probe: &[u8]) -> Option<&'static str> {
+    if probe.starts_with(b"ID3") {
+        return Some("audio/mpeg");
+    }
+    if probe.len() >= 2 && probe[0] == 0xff {
+        // ADTS (AAC) : 1111 1111 1111 x00x ; trame MPEG : 1111 1111 111x xxxx.
+        if probe[1] & 0xf6 == 0xf0 {
+            return Some("audio/aac");
+        }
+        if probe[1] & 0xe0 == 0xe0 {
+            return Some("audio/mpeg");
+        }
+    }
+    if probe.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    if probe.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if probe.len() >= 12 && probe.starts_with(b"RIFF") && &probe[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    if probe.len() >= 12 && &probe[4..8] == b"ftyp" && matches!(&probe[8..12], b"M4A " | b"M4B ") {
+        return Some("audio/mp4");
+    }
+    None
+}
+
 /// Story 51 : un fichier qui n'est pas une image propre.
 pub const FILE_MIME: &str = "application/octet-stream";
 const MAX_NAME_CHARS: usize = 255;
@@ -365,6 +394,19 @@ mod tests {
         assert_eq!(sniff_video(b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm"), Some("video/webm"));
         assert_eq!(sniff_video(b"\x1a\x45\xdf\xa3\x42\x82\x88matroska"), Some("video/x-matroska"));
         assert_eq!(sniff_video(b"PK\x03\x04"), None);
+    }
+
+    #[test]
+    fn sons() {
+        assert_eq!(sniff_audio(b"ID3\x04\0\0"), Some("audio/mpeg"));
+        assert_eq!(sniff_audio(b"\xff\xfb\x90\x64"), Some("audio/mpeg"));
+        assert_eq!(sniff_audio(b"\xff\xf1\x50\x80"), Some("audio/aac"));
+        assert_eq!(sniff_audio(b"OggS\0\x02"), Some("audio/ogg"));
+        assert_eq!(sniff_audio(b"fLaC\0\0\0\x22"), Some("audio/flac"));
+        assert_eq!(sniff_audio(b"RIFF\0\0\0\0WAVEfmt "), Some("audio/wav"));
+        assert_eq!(sniff_audio(b"\0\0\0\x20ftypM4A \0\0\0\0"), Some("audio/mp4"));
+        assert_eq!(sniff_audio(b"\xff\xd8\xff\xe0"), None, "un JPEG n'est pas une trame MPEG");
+        assert_eq!(sniff_audio(b"PK\x03\x04"), None);
     }
 
     #[test]

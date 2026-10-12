@@ -229,6 +229,7 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
     let (mime, width, height) = media::sniff(&probe)
         .ok()
         .or_else(|| media::sniff_video(&probe).map(|mime| (mime, 0, 0)))
+        .or_else(|| media::sniff_audio(&probe).map(|mime| (mime, 0, 0)))
         .unwrap_or((media::FILE_MIME, 0, 0));
     let fallback = if mime == media::FILE_MIME { "fichier" } else { "image" };
     let name = media::sanitize_name(head.media_name.as_deref(), fallback);

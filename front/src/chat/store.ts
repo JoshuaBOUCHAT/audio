@@ -464,8 +464,8 @@ export class ChatStore {
         this.setMedia(info.id, {
           status: "ready",
           info,
-          // Image ou vidéo qu'on vient d'envoyer : lue depuis le fichier local.
-          url: info.isImage || info.isVideo ? URL.createObjectURL(file) : undefined,
+          // Image, vidéo ou son qu'on vient d'envoyer : lu depuis le fichier local.
+          url: info.isImage || info.isVideo || info.isAudio ? URL.createObjectURL(file) : undefined,
         })
         resolve(info)
       }
@@ -501,7 +501,7 @@ export class ChatStore {
       else {
         this.setMedia(id, { status: "ready", info })
         if (info.isImage) void this.loadImage(info)
-        if (info.isVideo) void this.refreshStream(id)
+        if (info.isVideo || info.isAudio) void this.refreshStream(id)
       }
     }
   }

@@ -248,6 +248,11 @@ Ajoutées le 2026-10-12 (51-53), dans la continuité des images (§ Images).
     vidéo en pause ne coupe pas). Format que le navigateur ne sait pas lire (HEVC,
     certains MKV) : retour à la carte fichier avec téléchargement.
 
+61. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux écouter un fichier audio
+    directement dans la conversation (lecteur intégré). **Décisions** : MP3, AAC,
+    M4A, OGG/Opus, FLAC, WAV reconnus à leurs octets magiques ; même lecture par
+    plages et ticket de lecture que la vidéo (story 54).
+
 ### Apparence
 
 55. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux choisir un thème

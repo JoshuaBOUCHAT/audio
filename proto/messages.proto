@@ -95,8 +95,8 @@ message Media {
   uint64 owner_id = 6;  // seul à pouvoir la supprimer pour tout le monde (story 50)
   uint64 created_at = 7; // ms epoch
   // Story 51 : nom du fichier (assaini par le serveur). Un fichier qui n'est ni une
-  // image propre ni une vidéo (story 54, mime video/*) a mime =
-  // application/octet-stream et width = height = 0.
+  // image propre, ni une vidéo (story 54, video/*), ni un son (story 61, audio/*) a
+  // mime = application/octet-stream et width = height = 0.
   string name = 8;
   // Story 52 : dossier compressé en ZIP par le client — nombre de fichiers et taille
   // d'origine, déclarés par le client (informatifs). 0 = pas un dossier.

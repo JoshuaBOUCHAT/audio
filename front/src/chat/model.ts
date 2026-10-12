@@ -148,8 +148,10 @@ export type MediaInfo = {
   height: number
   /** Image propre (story 47), affichée dans le fil. */
   isImage: boolean
-  /** Vidéo (story 54), lue dans le fil ; ni l'un ni l'autre : fichier à télécharger. */
+  /** Vidéo (story 54), lue dans le fil. */
   isVideo: boolean
+  /** Son (story 61), écouté dans le fil ; sinon : fichier à télécharger. */
+  isAudio: boolean
   /** Dossier compressé (story 52) : 0 sinon. */
   folderFiles: number
   folderSize: number
@@ -167,6 +169,7 @@ export function toMediaInfo(media: chat.IMedia): MediaInfo {
     height: media.height ?? 0,
     isImage: mime.startsWith("image/"),
     isVideo: mime.startsWith("video/"),
+    isAudio: mime.startsWith("audio/"),
     folderFiles: media.folderFiles ?? 0,
     folderSize: toNumber(media.folderSize),
   }
