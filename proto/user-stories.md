@@ -52,9 +52,11 @@ email et mot de passe.
 66. En tant qu'invité, je veux ouvrir le lien et **créer mon compte** : email, pseudo,
     mot de passe ; je suis connecté aussitôt.
     **Décisions** : email unique (409), pseudo selon la story 34, mot de passe de 8
-    caractères min. Mot de passe haché en **bcrypt coût 6 + pepper** : un hachage
-    léger (~3 ms) pour ne pas figer le serveur single-thread (audio, vidéo), compensé
-    par un secret serveur de 32 octets (`data/pepper`, ou `AUDIO_PEPPER`) mêlé au mot
+    caractères min. Mot de passe haché en **bcrypt coût 12 + pepper**
+    (révision 2026-10-12, coût 6 au départ) : ~185 ms de calcul, découpés en
+    tranches de 16 tours qui rendent la main à la boucle — le serveur single-thread ne
+    se fige jamais plus de ~1 ms (audio, vidéo). Les anciens hash restent valides et
+    sont refaits au coût 12 à la connexion suivante. En plus, un secret serveur de 32 octets (`data/pepper`, ou `AUDIO_PEPPER`) mêlé au mot
     de passe par HMAC-SHA256 avant bcrypt — un dump seul ne permet pas de tester des
     mots de passe. Hash dans `password:{user}`, jamais dans `User` (qui part au
     client).

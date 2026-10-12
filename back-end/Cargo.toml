@@ -8,6 +8,7 @@ aws-lc-rs = "1"
 base64 = "0.22"
 bcrypt = "0.17"
 bincode = "1"
+blowfish = { version = "0.9", features = ["bcrypt"] }
 crc32fast = "1.4"
 futures = "0.3"
 httparse = "1.10.1"
@@ -23,6 +24,10 @@ rustls-acme = "0.15.3"
 serde = { version = "1.0.228", features = ["derive"] }
 str0m = "0.21.0"
 uuid = { version = "1.23.4", features = ["v4"] }
+
+# bcrypt au coût 12 : sans optimisation, une connexion prendrait plusieurs secondes en dev.
+[profile.dev.package.blowfish]
+opt-level = 3
 
 [build-dependencies]
 prost-build = "0.14.4"

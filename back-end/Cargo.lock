@@ -271,6 +271,7 @@ dependencies = [
  "base64",
  "bcrypt",
  "bincode",
+ "blowfish",
  "crc32fast",
  "futures",
  "httparse",

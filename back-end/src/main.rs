@@ -223,7 +223,7 @@ async fn read_loop(
             pending.drain(..frame.consumed);
             match frame.opcode {
                 0x8 => return, // close
-                0x2 => handle_binary_frame(&frame.payload, state, conn, &mut user_id),
+                0x2 => handle_binary_frame(&frame.payload, state, conn, &mut user_id).await,
                 _ => {} // texte/ping/pong non gérés à ce stade
             }
         }
@@ -241,7 +241,7 @@ async fn read_loop(
     }
 }
 
-fn handle_binary_frame(payload: &[u8], state: &AppState, conn: ConnId, user_id: &mut Option<u64>) {
+async fn handle_binary_frame(payload: &[u8], state: &AppState, conn: ConnId, user_id: &mut Option<u64>) {
     let envelope = match proto::ClientEnvelope::decode(payload) {
         Ok(envelope) => envelope,
         Err(e) => {
@@ -249,7 +249,7 @@ fn handle_binary_frame(payload: &[u8], state: &AppState, conn: ConnId, user_id: 
             return;
         }
     };
-    if let Some(response) = handle_client_envelope(envelope, state, conn, user_id) {
+    if let Some(response) = handle_client_envelope(envelope, state, conn, user_id).await {
         registry::send(&state.registry, conn, &server_frame(&response));
     }
 }
@@ -258,7 +258,7 @@ fn server_frame(envelope: &proto::ServerEnvelope) -> Vec<u8> {
     ws::encode_frame(0x2, &envelope.encode_to_vec())
 }
 
-fn handle_client_envelope(
+async fn handle_client_envelope(
     envelope: proto::ClientEnvelope,
     state: &AppState,
     conn: ConnId,
@@ -276,9 +276,9 @@ fn handle_client_envelope(
             let result = validate::validate_auth_request(req).and_then(|valid| handle_auth(valid.token, state, user_id));
             authenticated(state, conn, result)
         }
-        Some(Payload::PasswordLogin(req)) => authenticated(state, conn, password_login(req, state, user_id)),
-        Some(Payload::AcceptInvite(req)) => authenticated(state, conn, accept_invite(req, state, user_id)),
-        Some(Payload::SetPassword(req)) => match set_password(req, state, *user_id) {
+        Some(Payload::PasswordLogin(req)) => authenticated(state, conn, password_login(req, state, user_id).await),
+        Some(Payload::AcceptInvite(req)) => authenticated(state, conn, accept_invite(req, state, user_id).await),
+        Some(Payload::SetPassword(req)) => match set_password(req, state, *user_id).await {
             Ok(()) => proto::server_envelope::Payload::PasswordSet(proto::PasswordSet {}),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
@@ -776,25 +776,43 @@ fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uuid) 
 /// Story 67 : email + mot de passe. Même erreur pour un email inconnu et un mauvais
 /// mot de passe (un hash factice est vérifié : même durée) ; 10 échecs bloquent
 /// l'email 15 min.
-fn password_login(
+///
+/// Le hash rend la main (~200 ms en tranches) : la base n'est pas empruntée pendant.
+/// L'échec est compté **avant** le hash et effacé en cas de succès — sinon des essais
+/// lancés en parallèle passeraient tous `check_lockout` avant le premier échec compté.
+async fn password_login(
     req: proto::PasswordLogin,
     state: &AppState,
     user_id_slot: &mut Option<u64>,
 ) -> Result<proto::AuthResponse, proto::Error> {
     let email = Email::parse(&req.email)?;
-    let mut art = state.art.borrow_mut();
-    accounts::check_lockout(&mut art, email.as_ref())?;
-    let id = find_user_by_email(&mut art, &email);
-    let hash = id.and_then(|id| accounts::password_hash(&mut art, id));
-    if !state.passwords.verify(&req.password, hash.as_deref()) {
+    let (id, hash) = {
+        let mut art = state.art.borrow_mut();
+        accounts::check_lockout(&mut art, email.as_ref())?;
         accounts::record_failure(&mut art, email.as_ref());
+        let id = find_user_by_email(&mut art, &email);
+        (id, id.and_then(|id| accounts::password_hash(&mut art, id)))
+    };
+    if !state.passwords.verify(&req.password, hash.as_deref()).await {
         return Err(proto::Error {
             code: 401,
             message: "email ou mot de passe incorrect".to_string(),
         });
     }
+    let id = id.expect("mot de passe vérifié : compte existant");
+    // Hash d'avant le coût 12 : refait maintenant que le mot de passe est connu.
+    let rehash = match hash {
+        Some(old) if accounts::needs_rehash(&old) => Some((old, state.passwords.hash(&req.password).await)),
+        _ => None,
+    };
+    let mut art = state.art.borrow_mut();
     accounts::clear_failures(&mut art, email.as_ref());
-    let user = load_user(&mut art, id.expect("mot de passe vérifié : compte existant"));
+    if let Some((old, new)) = rehash
+        && accounts::password_hash(&mut art, id).as_deref() == Some(old.as_str())
+    {
+        accounts::store_password(&mut art, id, &new);
+    }
+    let user = load_user(&mut art, id);
     let session = new_session(&mut art, user.id);
     state.dirty.set(true);
     user_id_slot.replace(user.id);
@@ -803,7 +821,7 @@ fn password_login(
 
 /// Story 66 : création du compte sur invitation (email, pseudo, mot de passe), puis
 /// connexion. L'invitation n'est consommée qu'une fois tout validé.
-fn accept_invite(
+async fn accept_invite(
     req: proto::AcceptInvite,
     state: &AppState,
     user_id_slot: &mut Option<u64>,
@@ -811,7 +829,7 @@ fn accept_invite(
     let email = Email::parse(&req.email)?;
     let pseudo = validate::validate_set_pseudo(proto::SetPseudo { pseudo: req.pseudo })?.pseudo;
     accounts::validate_password(&req.password)?;
-    let hash = state.passwords.hash(&req.password);
+    let hash = state.passwords.hash(&req.password).await;
     let mut art = state.art.borrow_mut();
     if !accounts::invite_exists(&mut art, &req.token) {
         return Err(proto::Error {
@@ -847,19 +865,26 @@ fn accept_invite(
 }
 
 /// Story 67 : définir (compte venu d'un lien) ou changer son mot de passe — l'actuel
-/// est demandé s'il existe.
-fn set_password(req: proto::SetPassword, state: &AppState, user_id: Option<u64>) -> Result<(), proto::Error> {
+/// est demandé s'il existe. Les hash rendent la main : si le mot de passe a changé
+/// entre-temps (autre appareil), on refuse plutôt que d'écraser.
+async fn set_password(req: proto::SetPassword, state: &AppState, user_id: Option<u64>) -> Result<(), proto::Error> {
     let user_id = require_auth(user_id)?;
     accounts::validate_password(&req.password)?;
-    let mut art = state.art.borrow_mut();
-    let current = accounts::password_hash(&mut art, user_id);
-    if current.is_some() && !state.passwords.verify(&req.current, current.as_deref()) {
+    let current = accounts::password_hash(&mut state.art.borrow_mut(), user_id);
+    if current.is_some() && !state.passwords.verify(&req.current, current.as_deref()).await {
         return Err(proto::Error {
             code: 401,
             message: "mot de passe actuel incorrect".to_string(),
         });
     }
-    let hash = state.passwords.hash(&req.password);
+    let hash = state.passwords.hash(&req.password).await;
+    let mut art = state.art.borrow_mut();
+    if accounts::password_hash(&mut art, user_id) != current {
+        return Err(proto::Error {
+            code: 409,
+            message: "mot de passe modifié entre-temps : réessaie".to_string(),
+        });
+    }
     accounts::store_password(&mut art, user_id, &hash);
     state.dirty.set(true);
     Ok(())

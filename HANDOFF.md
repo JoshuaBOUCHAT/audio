@@ -58,7 +58,7 @@ illimité), `AUDIO_PEPPER` (sinon `data/pepper`), et pour les tests
 | `registry.rs` | connexions : broadcast, envoi ciblé par utilisateur (DM), ping de toutes les connexions |
 | `presence.rs` | présence en mémoire, délais de 15 s (stories 23, 41-42) |
 | `reads.rs` | non-lus (`read:{user}:{conv}`, krange paginé plafonné à 100, mentions) et réglages de notification (`settings:{user}`) |
-| `accounts.rs` | mots de passe (bcrypt coût 6 + pepper HMAC), verrouillage 10 échecs / 15 min, invitations, liens de connexion |
+| `accounts.rs` | mots de passe (bcrypt coût 12 par tranches de 16 tours + pepper HMAC, rehash des anciens hash à la connexion), verrouillage 10 échecs / 15 min, invitations, liens de connexion |
 | `media.rs` | images / vidéos / sons / fichiers : reconnaissance par octets magiques, quota, déduplication, tickets de téléchargement et de lecture |
 | `codec.rs` | bincode strict ; relecture tolérante en debug |
 | `keys.rs`, `validate.rs`, `email.rs`, `persist.rs`, `proto.rs` | clés hex triables, validations, email, snapshot, code prost |
