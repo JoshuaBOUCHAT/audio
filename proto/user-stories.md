@@ -290,6 +290,16 @@ Ajoutées le 2026-10-12.
     l'OS) quand l'app n'est pas au premier plan ; cliquer dessus ouvre la
     conversation. Désactivées par défaut, autorisation du navigateur demandée à
     l'activation.
+62. *(ajoutée le 2026-10-12, révise 56-57 pour les salons)* En tant qu'utilisateur, je
+    veux **mentionner** quelqu'un avec `@` : une autocomplétion propose les membres
+    pendant que je tape, et la personne choisie devient une pastille visible (mini
+    photo, pseudo coloré) ; un message qui me mentionne est surligné.
+    **Décisions** : une mention est `<@{id}>` dans le texte (comme Discord) — par id,
+    donc un changement de pseudo se reflète partout. Dans un **salon**, seules les
+    mentions de moi notifient (son, popup) et font le compteur rouge ; un salon non
+    lu sans mention apparaît juste en gras. Dans un **DM**, chaque message notifie et
+    compte (inchangé). Le serveur compte les mentions non lues comme les non-lus
+    (story 56). Pas de `@everyone` en v1.
 60. En tant qu'utilisateur, je veux un **menu Paramètres** (bouton ⚙ en bas à gauche)
     regroupant Profil, Apparence et Notifications, extensible plus tard (vidéo,
     audio…). **Décisions** : réglages de notification mémorisés avec le compte
