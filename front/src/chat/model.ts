@@ -109,6 +109,34 @@ export function byLastActivity(a: Conversation, b: Conversation): number {
   return Math.max(b.lastMessageId, b.id) - Math.max(a.lastMessageId, a.id)
 }
 
+/** Stories 57-60 : réglages de notification, mémorisés avec le compte. */
+export type NotifySettings = {
+  /** Id d'un son de `sounds.ts`, "" = aucun. */
+  sound: string
+  desktop: boolean
+  /** Story 58 : par conversation ; absente = tout activé. */
+  rules: Record<number, NotifyRule>
+}
+export type NotifyRule = { muted: boolean; silent: boolean }
+
+export function toNotifySettings(settings: chat.ISettings | null | undefined): NotifySettings {
+  const rules: Record<number, NotifyRule> = {}
+  for (const r of settings?.rules ?? []) {
+    rules[toNumber(r.channelId)] = { muted: r.muted ?? false, silent: r.silent ?? false }
+  }
+  return { sound: settings?.sound ?? "pop", desktop: settings?.desktopNotifications ?? false, rules }
+}
+
+export function fromNotifySettings(settings: NotifySettings): chat.Settings.$Properties {
+  return {
+    sound: settings.sound,
+    desktopNotifications: settings.desktop,
+    rules: Object.entries(settings.rules)
+      .filter(([, r]) => r.muted || r.silent)
+      .map(([id, r]) => ({ channelId: Number(id), muted: r.muted, silent: r.silent })),
+  }
+}
+
 /** Stories 27, 51-52 : métadonnées d'un média, sans son contenu. */
 export type MediaInfo = {
   id: string

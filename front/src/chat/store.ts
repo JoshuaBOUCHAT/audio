@@ -13,6 +13,7 @@ import {
   createChannel,
   deleteMedia,
   deleteMessage,
+  markRead,
   editMessage,
   getMedia,
   requestDownload,
@@ -22,6 +23,7 @@ import {
   sendMessage,
   setAvatar,
   setBio,
+  setSettings,
   setTheme,
   setPseudo,
   setStatus,
@@ -33,8 +35,10 @@ import {
   isTextChannel,
   mergeMessages,
   toChannel,
+  fromNotifySettings,
   fromThemeChoice,
   toConversation,
+  toNotifySettings,
   toMediaInfo,
   toThemeChoice,
   toMe,
@@ -46,10 +50,13 @@ import {
   type Conversation,
   type Me,
   type MediaInfo,
+  type NotifySettings,
   type Profile,
 } from "./model"
 import { applyTheme, type ThemeChoice } from "@/lib/theme"
 import { chat } from "@/proto/messages.js"
+import { plainText } from "./media"
+import { playSound } from "./sounds"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
 
 export type Phase =
@@ -82,6 +89,10 @@ export type ChatState = {
   online: ReadonlySet<number>
   /** Images (story 27) chargées ou en cours, par id. */
   media: Record<string, MediaEntry>
+  /** Story 56 : non-lus par conversation (salon ou DM). */
+  unread: Record<number, { count: number; lastReadId: number }>
+  /** Stories 57-60. */
+  settings: NotifySettings
   /** Confirmation brève (« Lien copié »), effacée seule. */
   toast: string | null
   /** Photos chargées : object URL de la version connue (story 36). */
@@ -102,6 +113,8 @@ const INITIAL: ChatState = {
   users: {},
   online: new Set(),
   media: {},
+  unread: {},
+  settings: { sound: "pop", desktop: false, rules: {} },
   toast: null,
   avatars: {},
   messages: {},
@@ -134,6 +147,11 @@ export class ChatStore {
   /** Ids dont les métadonnées sont à demander, envoyés en un seul `GetMedia`. */
   private mediaQueue = new Set<string>()
   private toastTimer: ReturnType<typeof setTimeout> | null = null
+  /** Conversation affichée (`setActive`) : ses messages ne notifient pas, ils sont lus. */
+  private active: number | null = null
+  private lastSound = 0
+  /** Clic sur une notification système : l'interface bascule sur la conversation. */
+  onOpenConversation: ((channelId: number) => void) | null = null
 
   constructor(magicToken: string | null) {
     this.pendingMagicToken = magicToken
@@ -158,10 +176,15 @@ export class ChatStore {
   start(): void {
     this.disposed = false
     if (!this.socket) this.connect()
+    // Story 56 : revenir sur l'onglet, c'est lire la conversation affichée.
+    window.addEventListener("focus", this.markActiveRead)
+    document.addEventListener("visibilitychange", this.markActiveRead)
   }
 
   dispose(): void {
     this.disposed = true
+    window.removeEventListener("focus", this.markActiveRead)
+    document.removeEventListener("visibilitychange", this.markActiveRead)
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     this.socket?.close()
@@ -277,12 +300,18 @@ export class ChatStore {
     for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
     this.avatarRequests.clear()
 
+    const unread: ChatState["unread"] = {}
+    for (const u of auth.unread ?? []) {
+      unread[toNumber(u.channelId)] = { count: u.count ?? 0, lastReadId: toNumber(u.lastReadId) }
+    }
     this.set({
       phase: me.pseudo ? "ready" : "pseudo",
       me,
       users,
       channels,
       dms,
+      unread,
+      settings: toNotifySettings(auth.settings),
       online: new Set((auth.onlineUserIds ?? []).map(toNumber)),
       messages: kept,
       avatars: {},
@@ -319,6 +348,7 @@ export class ChatStore {
     // y est déjà ; ceux qui suivent se fusionnent normalement.
     const synced = (sync.messages ?? []).map(toMessage)
     this.setMessages(channelId, () => synced)
+    if (channelId === this.active) this.markActiveRead()
   }
 
   /** `replyToId` : message cité (story 39), 0 = pas une réponse. */
@@ -328,6 +358,7 @@ export class ChatStore {
     if (!message) return false
     this.addMessage(toMessage(message))
     this.bumpDm(toMessage(message))
+    this.markActiveRead() // répondre, c'est avoir lu ce qui précède
     return true
   }
 
@@ -536,6 +567,93 @@ export class ChatStore {
     this.setMedia(id, { status: "missing" })
   }
 
+  // --- non-lus et notifications (stories 56-60) ---
+
+  /** Conversation affichée, `null` si aucune. Elle est marquée lue. */
+  setActive = (channelId: number | null): void => {
+    this.active = channelId
+    if (channelId !== null) this.markActiveRead()
+  }
+
+  /**
+   * Marque lue la conversation affichée si la fenêtre est au premier plan (sinon on
+   * ne l'a pas vraiment lue) : au changement de conversation, au retour sur l'onglet,
+   * à l'arrivée d'un message, une fois ses messages chargés.
+   */
+  markActiveRead = (): void => {
+    const id = this.active
+    if (id === null || document.hidden || !document.hasFocus()) return
+    const messages = this.state.messages[id]
+    if (!messages) return
+    const last = messages.at(-1)?.id ?? 0
+    const current = this.state.unread[id]
+    if (last === 0 || (current && current.count === 0 && current.lastReadId >= last)) return
+    this.set({ unread: { ...this.state.unread, [id]: { count: 0, lastReadId: Math.max(last, current?.lastReadId ?? 0) } } })
+    void this.request(markRead(id, last))
+  }
+
+  /** Total des non-lus, salons ou DM — conversations coupées exclues. */
+  unreadTotal = (ids: number[]): number =>
+    ids.reduce((n, id) => n + (this.state.settings.rules[id]?.muted ? 0 : (this.state.unread[id]?.count ?? 0)), 0)
+
+  setNotifySettings = async (settings: NotifySettings): Promise<void> => {
+    this.set({ settings })
+    await this.request(setSettings(fromNotifySettings(settings)))
+  }
+
+  /**
+   * Story 58 : « Tout couper » règle chaque conversation, une par une — on peut
+   * ensuite n'en réactiver qu'une. `false` retire toutes les règles.
+   */
+  muteAll = (muted: boolean): Promise<void> => {
+    const rules: NotifySettings["rules"] = {}
+    if (muted) {
+      for (const { id } of [...this.state.channels, ...this.state.dms]) rules[id] = { muted: true, silent: false }
+    }
+    return this.setNotifySettings({ ...this.state.settings, rules })
+  }
+
+  /** Message d'un autre reçu en direct : non-lu ou lu, son, popup système. */
+  private onIncoming(message: ChatMessage): void {
+    const me = this.state.me
+    if (!me || message.userId === me.id) return
+    const id = message.channelId
+    const looking = this.active === id && !document.hidden && document.hasFocus()
+    if (looking) {
+      this.markActiveRead()
+      return
+    }
+    const current = this.state.unread[id] ?? { count: 0, lastReadId: 0 }
+    if (message.id > current.lastReadId) {
+      this.set({ unread: { ...this.state.unread, [id]: { ...current, count: Math.min(current.count + 1, 100) } } })
+    }
+    const rule = this.state.settings.rules[id]
+    if (rule?.muted) return
+    const { sound, desktop } = this.state.settings
+    if (sound && !rule?.silent && Date.now() - this.lastSound > 1000) {
+      this.lastSound = Date.now()
+      playSound(sound)
+    }
+    if (desktop && (document.hidden || !document.hasFocus()) && "Notification" in window && Notification.permission === "granted") {
+      this.desktopNotification(message)
+    }
+  }
+
+  private desktopNotification(message: ChatMessage): void {
+    const author = this.state.users[message.userId]?.pseudo ?? "Quelqu'un"
+    const channel = this.state.channels.find((c) => c.id === message.channelId)
+    const notification = new Notification(channel ? `${author} dans #${channel.name}` : author, {
+      body: plainText(message.content).replace(/\s+/g, " ").trim().slice(0, 200),
+      tag: `conversation-${message.channelId}`,
+      silent: true, // le son vient de l'app, réglable (story 57)
+    })
+    notification.onclick = () => {
+      window.focus()
+      this.onOpenConversation?.(message.channelId)
+      notification.close()
+    }
+  }
+
   /** Story 55 : appliqué tout de suite, mémorisé avec le compte, poussé à mes autres appareils. */
   setTheme = async (theme: ThemeChoice): Promise<void> => {
     const me = this.state.me
@@ -627,7 +745,21 @@ export class ChatStore {
           const message = toMessage(envelope.newMessage.message)
           this.addMessage(message)
           this.bumpDm(message)
+          this.onIncoming(message)
         }
+        break
+      case "readMarked": {
+        // Lu sur un autre de mes appareils : badge effacé ici aussi.
+        const marked = envelope.readMarked
+        if (!marked) break
+        const id = toNumber(marked.channelId)
+        const lastReadId = toNumber(marked.lastReadId)
+        const after = (this.state.messages[id] ?? []).filter((m) => m.id > lastReadId && m.userId !== this.state.me?.id && !m.deleted)
+        this.set({ unread: { ...this.state.unread, [id]: { count: after.length, lastReadId } } })
+        break
+      }
+      case "settingsSet":
+        if (envelope.settingsSet) this.set({ settings: toNotifySettings(envelope.settingsSet.settings) })
         break
       case "dmOpened": {
         // Premier message d'un DM ouvert par l'autre, ou DM ouvert dans un autre onglet.

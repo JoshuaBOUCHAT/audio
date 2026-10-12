@@ -3,7 +3,7 @@
 // (`ChannelFeed`), membres à droite (story 23, carte de profil au clic, story 44).
 
 import { useEffect, useState } from "react"
-import { AtSign, Hash, LogOut, MessageCircle, Moon, Plus, Sun, Users } from "lucide-react"
+import { AtSign, Hash, LogOut, MessageCircle, Moon, Plus, Settings, Sun, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { resolvedTheme } from "@/lib/theme"
@@ -12,16 +12,33 @@ import { PresenceAvatar } from "./Avatar"
 import { MembersPanel } from "./MembersPanel"
 import { ChannelFeed } from "./ChannelFeed"
 import { byLastActivity } from "./model"
-import { ProfilePanel } from "./ProfilePanel"
+import { SettingsPanel, type SettingsTab } from "./SettingsPanel"
 import type { ChatState, ChatStore } from "./store"
 
 type View = "channels" | "dms"
+
+const BASE_TITLE = document.title
+
+/** Story 56 : compteur de non-lus ; grisé pour une conversation coupée (story 58). */
+function UnreadBadge({ count, muted }: { count: number; muted: boolean }) {
+  if (count === 0) return null
+  return (
+    <span
+      className={cn(
+        "ml-auto min-w-5 shrink-0 rounded-full px-1.5 text-center text-[0.7rem] leading-5 font-semibold",
+        muted ? "bg-muted-foreground/30 text-foreground" : "bg-destructive text-white",
+      )}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  )
+}
 
 export function ChatView({ state, store }: { state: ChatState; store: ChatStore }) {
   const [view, setView] = useState<View>("channels")
   const [selectedChannel, setSelectedChannel] = useState<number | null>(null)
   const [selectedDm, setSelectedDm] = useState<number | null>(null)
-  const [profileOpen, setProfileOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null)
   const [membersOpen, setMembersOpen] = useState(true)
   const me = state.me!
   const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
@@ -35,7 +52,37 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 
   useEffect(() => {
     if (currentId !== undefined) store.open(currentId)
+    // Story 56 : la conversation affichée est lue et ne notifie pas.
+    store.setActive(currentId ?? null)
   }, [currentId, store])
+  useEffect(() => () => store.setActive(null), [store])
+
+  // Story 59 : cliquer une notification système ouvre sa conversation.
+  useEffect(() => {
+    store.onOpenConversation = (id) => {
+      if (store.getSnapshot().channels.some((c) => c.id === id)) {
+        setSelectedChannel(id)
+        setView("channels")
+      } else {
+        setSelectedDm(id)
+        setView("dms")
+      }
+    }
+    return () => {
+      store.onOpenConversation = null
+    }
+  }, [store])
+
+  // Story 56 : total des non-lus (conversations coupées exclues) dans le titre.
+  const channelUnread = store.unreadTotal(state.channels.map((c) => c.id))
+  const dmUnread = store.unreadTotal(state.dms.map((d) => d.id))
+  useEffect(() => {
+    const total = channelUnread + dmUnread
+    document.title = total > 0 ? `(${total > 99 ? "99+" : total}) ${BASE_TITLE}` : BASE_TITLE
+  }, [channelUnread, dmUnread])
+  const badge = (id: number) => (
+    <UnreadBadge count={state.unread[id]?.count ?? 0} muted={state.settings.rules[id]?.muted ?? false} />
+  )
 
   // Story 28 : ouvrir un DM depuis la liste des membres bascule dessus.
   async function messageUser(userId: number) {
@@ -64,6 +111,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
               >
                 {v === "channels" ? <Hash className="size-3.5" /> : <MessageCircle className="size-3.5" />}
                 {v === "channels" ? "Salons" : "Privé"}
+                <UnreadBadge count={v === "channels" ? channelUnread : dmUnread} muted={false} />
               </button>
             ))}
           </div>
@@ -84,7 +132,10 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   )}
                 >
                   <Hash className="size-4 shrink-0" />
-                  <span className="truncate">{c.name}</span>
+                  <span className={cn("truncate", (state.unread[c.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
+                    {c.name}
+                  </span>
+                  {badge(c.id)}
                 </button>
               ))}
               {state.channels.length === 0 && (
@@ -106,7 +157,10 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   )}
                 >
                   <PresenceAvatar userId={d.otherId} state={state} store={store} className="size-8" />
-                  <span className="truncate">{pseudoOf(d.otherId)}</span>
+                  <span className={cn("truncate", (state.unread[d.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
+                    {pseudoOf(d.otherId)}
+                  </span>
+                  {badge(d.id)}
                 </button>
               ))}
               {dms.length === 0 && (
@@ -121,7 +175,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
         <div className="flex items-center gap-1 border-t p-2">
           <button
             type="button"
-            onClick={() => setProfileOpen(true)}
+            onClick={() => setSettingsTab("profile")}
             className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted"
             title="Modifier le profil"
           >
@@ -138,6 +192,9 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
             title={resolvedTheme(me.theme) === "dark" ? "Passer en clair" : "Passer en sombre"}
           >
             {resolvedTheme(me.theme) === "dark" ? <Sun /> : <Moon />}
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setSettingsTab("profile")} title="Paramètres">
+            <Settings />
           </Button>
           <Button variant="ghost" size="icon-sm" onClick={store.logout} title="Se déconnecter">
             <LogOut />
@@ -199,12 +256,14 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
             state={state}
             store={store}
             onMessage={(id) => void messageUser(id)}
-            onEditProfile={() => setProfileOpen(true)}
+            onEditProfile={() => setSettingsTab("profile")}
           />
         </div>
       )}
 
-      {profileOpen && <ProfilePanel state={state} store={store} onClose={() => setProfileOpen(false)} />}
+      {settingsTab && (
+        <SettingsPanel state={state} store={store} initialTab={settingsTab} onClose={() => setSettingsTab(null)} />
+      )}
 
       {state.toast && (
         <div
