@@ -121,14 +121,41 @@ message MediaUploaded {
 message Settings {
   string sound = 1;                    // id d'un son du client ("pop", "ding"…), "" = aucun
   bool desktop_notifications = 2;      // story 59 : popups OS
-  repeated NotificationRule rules = 3; // story 58 : une règle par conversation réglée
+  // Story 58, remplacé par channel_rules / person_rules (story 63) : plus lu ni écrit,
+  // gardé pour que les dumps existants restent lisibles (bincode, codec.rs).
+  repeated NotificationRule rules = 3;
+  repeated ChannelRule channel_rules = 4; // story 63 : une par salon réglé
+  repeated PersonRule person_rules = 5;   // story 63 : une par personne réglée
 }
 
-// Story 58 : réglage d'une conversation (salon ou DM). Absente = tout activé.
+// Obsolète (story 58), cf. Settings.rules.
 message NotificationRule {
   uint64 channel_id = 1;
-  bool muted = 2;  // ni son ni popup, compteur grisé
-  bool silent = 3; // popup mais pas de son
+  bool muted = 2;
+  bool silent = 3;
+}
+
+// Story 63 : ce qui notifie dans un salon.
+enum ChannelLevel {
+  MENTIONS = 0; // défaut : seulement les mentions de moi
+  ALL = 1;      // chaque message
+  NOTHING = 2;  // rien (badge grisé)
+}
+
+// Story 63 : réglage d'un salon. Absent = mentions seulement, avec son.
+message ChannelRule {
+  uint64 channel_id = 1;
+  ChannelLevel level = 2;
+  bool silent = 3;
+}
+
+// Story 63 : réglage d'une personne. Absent = tout notifier, avec son.
+message PersonRule {
+  uint64 user_id = 1;
+  bool dm_muted = 2;       // ses messages privés ne notifient pas (badge grisé)
+  bool dm_silent = 3;      // … ou sans son
+  bool mentions_muted = 4; // ses mentions de moi dans les salons ne notifient pas
+  bool mentions_silent = 5;
 }
 
 // Story 56 : non-lus d'une conversation à la connexion.

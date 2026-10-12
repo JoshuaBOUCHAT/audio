@@ -300,6 +300,17 @@ Ajoutées le 2026-10-12.
     lu sans mention apparaît juste en gras. Dans un **DM**, chaque message notifie et
     compte (inchangé). Le serveur compte les mentions non lues comme les non-lus
     (story 56). Pas de `@everyone` en v1.
+63. *(ajoutée le 2026-10-12, remplace le réglage par conversation de la story 58)* En
+    tant qu'utilisateur, je veux régler les notifications **là où sont les gens et les
+    salons** : clic droit sur une personne (liste Privé, liste des membres) ou section
+    de sa carte de profil ; petit bouton 🔔 (ou clic droit) sur un salon.
+    **Décisions** — par **personne** : ses messages privés (notifier, son) et ses
+    mentions de moi dans les salons (notifier, son). Par **salon** : notifier pour tous
+    les messages, les mentions seulement (défaut) ou rien, et son oui/non. Une mention
+    dans un salon notifie si le salon ne dit pas « rien » et que la personne le
+    permet ; le son demande l'accord du salon et de la personne. « Tout couper »
+    (Paramètres) règle chaque salon sur « rien » et chaque personne sur « ne pas
+    notifier », un par un. Badge grisé quand la conversation ne notifie plus.
 60. En tant qu'utilisateur, je veux un **menu Paramètres** (bouton ⚙ en bas à gauche)
     regroupant Profil, Apparence et Notifications, extensible plus tard (vidéo,
     audio…). **Décisions** : réglages de notification mémorisés avec le compte
