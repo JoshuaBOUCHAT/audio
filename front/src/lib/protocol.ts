@@ -43,6 +43,11 @@ export function syncRequest(channelId: number, lastSeenId: number): ClientEnvelo
   return { payload: "sync", sync: { channelId, lastSeenId } };
 }
 
+/** Story 28 : DM avec `userId`, l'existant ou un nouveau. */
+export function openDm(userId: number): ClientEnvelopeShape {
+  return { payload: "openDm", openDm: { userId } };
+}
+
 /** Story 41 : En ligne ou Invisible (mémorisé avec le compte). */
 export function setStatus(status: chat.Status): ClientEnvelopeShape {
   return { payload: "setStatus", setStatus: { status } };

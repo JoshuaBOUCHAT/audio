@@ -38,9 +38,10 @@ struct Conn {
 #[derive(Default)]
 pub struct Registry {
     conns: GenArena<Conn>,
-    /// Connexions dont l'`AuthRequest` a été acceptée : seules destinataires des
-    /// broadcasts (GenArena n'est pas itérable, et c'est le seul parcours utile).
-    authenticated: Vec<ConnId>,
+    /// Connexions dont l'`AuthRequest` a été acceptée, avec leur utilisateur : seules
+    /// destinataires des broadcasts, et de la livraison ciblée des DM (story 29).
+    /// GenArena n'est pas itérable, et c'est le seul parcours utile.
+    authenticated: Vec<(ConnId, u64)>,
 }
 
 impl Registry {
@@ -56,14 +57,19 @@ impl Registry {
     /// quand elle constate que la connexion n'existe plus.
     pub fn remove(&mut self, id: ConnId) {
         self.conns.remove(id.0);
-        self.authenticated.retain(|&a| a != id);
+        self.authenticated.retain(|&(a, _)| a != id);
     }
 
     /// Idempotent : une reprise de session sur une connexion déjà authentifiée ne
-    /// la double pas dans les broadcasts.
-    pub fn mark_authenticated(&mut self, id: ConnId) {
-        if self.conns.contains(id.0) && !self.authenticated.contains(&id) {
-            self.authenticated.push(id);
+    /// la double pas dans les broadcasts (et une auth avec un autre compte remplace
+    /// l'utilisateur de la connexion).
+    pub fn mark_authenticated(&mut self, id: ConnId, user_id: u64) {
+        if !self.conns.contains(id.0) {
+            return;
+        }
+        match self.authenticated.iter_mut().find(|(a, _)| *a == id) {
+            Some(entry) => entry.1 = user_id,
+            None => self.authenticated.push((id, user_id)),
         }
     }
 }
@@ -84,23 +90,29 @@ pub fn send(registry: &SharedRegistry, id: ConnId, frame: &[u8]) {
 /// authentifiées sauf `except` — l'émetteur reçoit déjà sa réponse directe, avec son
 /// `request_id`.
 pub fn broadcast(registry: &SharedRegistry, except: ConnId, frame: &[u8]) {
-    broadcast_except(registry, Some(except), frame);
+    push_to(registry, |id, _| id != except, frame);
 }
 
 /// Événement sans émetteur (ex. présence annoncée après un délai) : à toutes les
 /// connexions authentifiées.
 pub fn broadcast_all(registry: &SharedRegistry, frame: &[u8]) {
-    broadcast_except(registry, None, frame);
+    push_to(registry, |_, _| true, frame);
 }
 
-fn broadcast_except(registry: &SharedRegistry, except: Option<ConnId>, frame: &[u8]) {
+/// Story 29 : seulement aux connexions de `users` (participants d'un DM), toutes
+/// sauf `except`.
+pub fn send_to_users(registry: &SharedRegistry, users: &[u64], except: Option<ConnId>, frame: &[u8]) {
+    push_to(registry, |id, user| Some(id) != except && users.contains(&user), frame);
+}
+
+fn push_to(registry: &SharedRegistry, target: impl Fn(ConnId, u64) -> bool, frame: &[u8]) {
     let targets: Vec<ConnId> = {
         let mut reg = registry.borrow_mut();
         let Registry { conns, authenticated } = &mut *reg;
         authenticated
             .iter()
-            .copied()
-            .filter(|&id| Some(id) != except)
+            .filter(|&&(id, user)| target(id, user))
+            .map(|&(id, _)| id)
             .inspect(|id| {
                 if let Some(conn) = conns.get_mut(id.0) {
                     conn.pending.extend_from_slice(frame);

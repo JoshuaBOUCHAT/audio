@@ -308,8 +308,8 @@ fn handle_client_envelope(
         Some(Payload::Auth(req)) => match validate::validate_auth_request(req) {
             Ok(valid) => match handle_auth(valid.token, state, user_id) {
                 Ok(mut response) => {
-                    state.registry.borrow_mut().mark_authenticated(conn);
                     let me = response.me.as_ref().expect("AuthResponse.me toujours rempli");
+                    state.registry.borrow_mut().mark_authenticated(conn, me.id);
                     presence::connected(
                         &state.presence,
                         &state.registry,
@@ -343,19 +343,25 @@ fn handle_client_envelope(
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
         Some(Payload::SendMessage(req)) => match send_message(req, state, *user_id) {
-            Ok(message) => {
+            Ok(sent) => {
+                // Story 28 : premier message d'un DM, l'autre découvre la conversation
+                // juste avant le message (même file d'envoi, donc dans cet ordre).
+                if let Some((other, conversation)) = sent.dm_revealed {
+                    let opened = event(proto::server_envelope::Payload::DmOpened(
+                        proto::DmOpened {
+                            conversation: Some(conversation),
+                        },
+                    ));
+                    registry::send_to_users(&state.registry, &[other], None, &opened);
+                }
                 let new_message = proto::server_envelope::Payload::NewMessage(
                     proto::NewMessage {
-                        message: Some(message),
+                        message: Some(sent.message),
                     },
                 );
-                // Story 11 : broadcast global à tous les clients authentifiés (pas
-                // d'abonnement par salon) ; l'émetteur le reçoit en réponse.
-                let event = proto::ServerEnvelope {
-                    request_id: String::new(),
-                    payload: Some(new_message.clone()),
-                };
-                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                // Story 11 : broadcast global pour un salon (pas d'abonnement), story 29 :
+                // aux seuls participants pour un DM ; l'émetteur le reçoit en réponse.
+                notify(state, conn, &sent.audience, &new_message);
                 new_message
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -365,30 +371,35 @@ fn handle_client_envelope(
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
         Some(Payload::DeleteMessage(req)) => match delete_message(req, state, *user_id) {
-            Ok(deleted) => {
+            Ok((deleted, audience)) => {
                 let deleted = proto::server_envelope::Payload::MessageDeleted(deleted);
-                let event = proto::ServerEnvelope {
-                    request_id: String::new(),
-                    payload: Some(deleted.clone()),
-                };
-                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                notify(state, conn, &audience, &deleted);
                 deleted
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
         Some(Payload::EditMessage(req)) => match edit_message(req, state, *user_id) {
-            Ok(message) => {
+            Ok((message, audience)) => {
                 let edited = proto::server_envelope::Payload::MessageEdited(
                     proto::MessageEdited {
                         message: Some(message),
                     },
                 );
-                let event = proto::ServerEnvelope {
-                    request_id: String::new(),
-                    payload: Some(edited.clone()),
-                };
-                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                notify(state, conn, &audience, &edited);
                 edited
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::OpenDm(req)) => match open_dm(req, state, *user_id) {
+            Ok(conversation) => {
+                let opened = proto::server_envelope::Payload::DmOpened(proto::DmOpened {
+                    conversation: Some(conversation),
+                });
+                // Mes autres onglets/appareils l'ont aussi ; l'autre participant
+                // seulement au premier message (story 28).
+                let me = user_id.expect("open_dm exige l'auth");
+                registry::send_to_users(&state.registry, &[me], Some(conn), &event(opened.clone()));
+                opened
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
@@ -456,6 +467,33 @@ fn dev_login_email(token: Uuid, state: &AppState) -> Option<Email> {
 #[cfg(not(debug_assertions))]
 fn dev_login_email(_token: Uuid, _state: &AppState) -> Option<Email> {
     None
+}
+
+/// Événement poussé (request_id vide), déjà encodé en frame.
+fn event(payload: proto::server_envelope::Payload) -> Vec<u8> {
+    server_frame(&proto::ServerEnvelope {
+        request_id: String::new(),
+        payload: Some(payload),
+    })
+}
+
+/// Destinataires d'un événement sur les messages d'une conversation.
+enum Audience {
+    /// Salon : tout le monde voit tout (story 11).
+    Everyone,
+    /// DM : les deux participants seulement (story 29).
+    Participants([u64; 2]),
+}
+
+/// Pousse l'événement aux destinataires sauf l'émetteur, qui l'a en réponse.
+fn notify(state: &AppState, conn: ConnId, audience: &Audience, payload: &proto::server_envelope::Payload) {
+    let frame = event(payload.clone());
+    match audience {
+        Audience::Everyone => registry::broadcast(&state.registry, conn, &frame),
+        Audience::Participants(users) => {
+            registry::send_to_users(&state.registry, users, Some(conn), &frame)
+        }
+    }
 }
 
 /// Stories 35-37 : le changement de profil est diffusé aux autres clients
@@ -569,14 +607,16 @@ fn handle_auth(
     };
 
     user_id_slot.replace(user.id);
-    let channels = list_channels(&art, user.id);
+    let channels = list_channels(&art);
     let users = list_profiles(&art);
+    let dms = list_dms(&mut art, user.id);
     Ok(proto::AuthResponse {
         me: Some(user),
         channels,
         session_token: session_token.to_string(),
         users,
         online_user_ids: Vec::new(), // rempli par l'appelant, après `presence::connected`
+        dms,
     })
 }
 
@@ -767,19 +807,140 @@ fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
     .expect("user:{id} corrompu")
 }
 
-/// Story 8 : tous les salons sont visibles par tout le monde, sauf les DM (stories
-/// 28-32), réservés à leurs deux participants. Triés par id (clés `keys::channel_key`).
-fn list_channels(art: &OxidArt, user_id: u64) -> Vec<proto::Channel> {
+/// Story 8 : tous les salons sont visibles par tout le monde. Les DM vivent sous
+/// `dm:` (stories 28-32), jamais parcourus ici. Triés par id (`keys::channel_key`).
+fn list_channels(art: &OxidArt) -> Vec<proto::Channel> {
     art.krange(keys::CHANNEL_PREFIX.as_bytes(), b"", usize::MAX, false)
         .iter()
         .map(|(_, val)| {
             bincode::deserialize::<proto::Channel>(range_bytes(val, "channel:{id}"))
                 .expect("channel:{id} corrompu")
         })
-        .filter(|c| {
-            c.r#type() != proto::channel::Type::Dm || c.participant_ids.contains(&user_id)
+        .collect()
+}
+
+/// Story 30 : mes DM, via `user_dms:{moi}:` — ne lit que mes entrées, pas celles des
+/// autres. Dernière activité = dernier message, lu par un `krange` inversé à une
+/// entrée (aucun champ à tenir à jour à chaque envoi).
+fn list_dms(art: &mut OxidArt, user_id: u64) -> Vec<proto::Conversation> {
+    let dm_ids: Vec<u64> = art
+        .krange(keys::user_dms_prefix(user_id).as_bytes(), b"", usize::MAX, false)
+        .iter()
+        .map(|(_, val)| parse_id(range_bytes(val, "user_dms")))
+        .collect();
+    dm_ids
+        .into_iter()
+        .map(|id| {
+            let channel = load_dm(art, id);
+            conversation(art, channel)
         })
         .collect()
+}
+
+fn parse_id(bytes: &[u8]) -> u64 {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .expect("id stocké en décimal")
+}
+
+/// DM référencé par un index écrit dans le même emprunt que lui : absence = invariant
+/// violé.
+fn load_dm(art: &mut OxidArt, id: u64) -> proto::Channel {
+    let val = art.get(keys::dm_key(id).as_bytes()).expect("user_dms → dm:{id} inexistant");
+    bincode::deserialize(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice())
+        .expect("dm:{id} corrompu")
+}
+
+fn conversation(art: &OxidArt, channel: proto::Channel) -> proto::Conversation {
+    let prefix = keys::message_prefix(channel.id);
+    let last_message_id = art
+        .krange(prefix.as_bytes(), b"", 1, true)
+        .iter()
+        .next()
+        .map(|(key, _)| {
+            keys::parse_sortable_id(&key[prefix.len()..]).expect("clé message:{ch}:{id} valide")
+        })
+        .unwrap_or(0);
+    proto::Conversation {
+        channel: Some(channel),
+        last_message_id,
+    }
+}
+
+/// Story 28 : DM avec `req.user_id`, l'existant s'il y en a un (créé par moi ou par
+/// l'autre), sinon un nouveau. Seule mon entrée `user_dms` est posée ici : l'autre
+/// n'apprend l'existence du DM qu'au premier message (`send_message`).
+fn open_dm(
+    req: proto::OpenDm,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Conversation, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let mut art = state.art.borrow_mut();
+    require_pseudo(&mut art, user_id)?;
+    let other = req.user_id;
+    if other == user_id {
+        return Err(proto::Error {
+            code: 400,
+            message: "pas de conversation privée avec soi-même".to_string(),
+        });
+    }
+    let unknown = || proto::Error {
+        code: 404,
+        message: "utilisateur inconnu".to_string(),
+    };
+    if !keys::is_sortable(other) {
+        return Err(unknown());
+    }
+    let other_user = art
+        .get(format!("user:{other}").as_bytes())
+        .map(|val| {
+            bincode::deserialize::<proto::User>(
+                val.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
+            )
+            .expect("user:{id} corrompu")
+        })
+        .ok_or_else(unknown)?;
+    if other_user.pseudo.is_empty() {
+        return Err(unknown());
+    }
+
+    let mine = keys::user_dm_key(user_id, other);
+    if let Some(val) = art.get(mine.as_bytes()) {
+        let id = parse_id(val.as_bytes().expect("user_dms toujours Value::String").as_slice());
+        let channel = load_dm(&mut art, id);
+        return Ok(conversation(&art, channel));
+    }
+    let channel = match art.get(keys::user_dm_key(other, user_id).as_bytes()) {
+        Some(val) => {
+            load_dm(&mut art, parse_id(val.as_bytes().expect("user_dms toujours Value::String").as_slice()))
+        }
+        None => {
+            let id = art
+                .incr(SharedByte::from_str("id_counter"))
+                .expect("id_counter jamais utilisé pour autre chose qu'un entier")
+                as u64;
+            let channel = proto::Channel {
+                id,
+                name: String::new(),
+                r#type: proto::channel::Type::Dm as i32,
+                participant_ids: vec![user_id, other],
+            };
+            let encoded = bincode::serialize(&channel).expect("sérialisation Channel");
+            art.set(
+                SharedByte::from_str(&keys::dm_key(id)),
+                Value::String(SharedByte::from_slice(encoded)),
+            );
+            channel
+        }
+    };
+    art.set(
+        SharedByte::from_str(&mine),
+        Value::String(SharedByte::from_str(&channel.id.to_string())),
+    );
+    state.dirty.set(true);
+    Ok(conversation(&art, channel))
 }
 
 /// Valeur d'une entrée de `krange` : audio ne stocke que des `Value::String`.
@@ -813,7 +974,7 @@ fn create_channel(
     // un nom), sans tenir compte de la casse. Scan de `channel:` plutôt qu'un index
     // dédié : quelques salons, chemin non chaud.
     let lowered = valid.name.to_lowercase();
-    if list_channels(&art, user_id)
+    if list_channels(&art)
         .iter()
         .any(|c| c.r#type() == proto::channel::Type::Text && c.name.to_lowercase() == lowered)
     {
@@ -848,31 +1009,34 @@ fn require_auth(user_id: Option<u64>) -> Result<u64, proto::Error> {
     })
 }
 
-/// Salon texte existant. Les DM sont refusés par toutes les opérations sur les
-/// messages tant que leur livraison ciblée n'existe pas : le broadcast global les
-/// montrerait à tout le monde.
-fn check_text_channel(art: &mut OxidArt, channel_id: u64) -> Result<(), proto::Error> {
+/// Conversation où `user_id` peut lire et écrire : un salon texte (tout le monde) ou
+/// un DM dont il est participant. Story 32 : un DM dont on n'est pas participant
+/// répond 404 comme s'il n'existait pas — admin compris.
+fn load_conversation(
+    art: &mut OxidArt,
+    channel_id: u64,
+    user_id: u64,
+) -> Result<Audience, proto::Error> {
     let unknown = || proto::Error {
         code: 404,
-        message: "salon inconnu".to_string(),
+        message: "conversation inconnue".to_string(),
     };
     if !keys::is_sortable(channel_id) {
         return Err(unknown());
     }
-    let channel_bytes = art
-        .get(keys::channel_key(channel_id).as_bytes())
-        .ok_or_else(unknown)?;
-    let channel: proto::Channel = bincode::deserialize(
-        channel_bytes.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
-    )
-    .expect("channel:{id} corrompu");
-    if channel.r#type() != proto::channel::Type::Text {
-        return Err(proto::Error {
-            code: 400,
-            message: "opération possible uniquement dans un salon texte".to_string(),
-        });
+    if art.get(keys::channel_key(channel_id).as_bytes()).is_some() {
+        return Ok(Audience::Everyone);
     }
-    Ok(())
+    let Some(val) = art.get(keys::dm_key(channel_id).as_bytes()) else {
+        return Err(unknown());
+    };
+    let dm: proto::Channel =
+        bincode::deserialize(val.as_bytes().expect("dm:{id} toujours Value::String").as_slice())
+            .expect("dm:{id} corrompu");
+    match dm.participant_ids[..] {
+        [a, b] if a == user_id || b == user_id => Ok(Audience::Participants([a, b])),
+        _ => Err(unknown()),
+    }
 }
 
 fn decode_message(val: &Value) -> proto::Message {
@@ -882,19 +1046,28 @@ fn decode_message(val: &Value) -> proto::Message {
     .expect("message corrompu")
 }
 
+struct Sent {
+    message: proto::Message,
+    audience: Audience,
+    /// Story 28 : premier message d'un DM — l'autre participant et la conversation à
+    /// lui révéler.
+    dm_revealed: Option<(u64, proto::Conversation)>,
+}
+
 /// Story 10 : envoi dans un salon texte existant, par n'importe quel utilisateur
-/// authentifié (pas de « rejoindre », story 9).
+/// authentifié (pas de « rejoindre », story 9), ou dans un DM dont on est
+/// participant (story 31).
 fn send_message(
     req: proto::SendMessage,
     state: &AppState,
     user_id: Option<u64>,
-) -> Result<proto::Message, proto::Error> {
+) -> Result<Sent, proto::Error> {
     let user_id = require_auth(user_id)?;
     let valid = validate::validate_send_message(req)?;
 
     let mut art = state.art.borrow_mut();
     require_pseudo(&mut art, user_id)?;
-    check_text_channel(&mut art, valid.channel_id)?;
+    let audience = load_conversation(&mut art, valid.channel_id, user_id)?;
     // Story 39 : le message cité doit exister dans ce salon (supprimé compris : on
     // peut répondre à un message supprimé entre-temps, la citation l'affichera).
     if let Some(reply_to_id) = valid.reply_to_id {
@@ -918,8 +1091,27 @@ fn send_message(
         edited_at: 0,
     };
     save_message(&mut art, &message);
+
+    // Story 28 : l'entrée `user_dms` de l'autre n'est posée qu'au premier message.
+    let mut dm_revealed = None;
+    if let Audience::Participants([a, b]) = audience {
+        let other = if a == user_id { b } else { a };
+        let theirs = keys::user_dm_key(other, user_id);
+        if art.get(theirs.as_bytes()).is_none() {
+            art.set(
+                SharedByte::from_str(&theirs),
+                Value::String(SharedByte::from_str(&valid.channel_id.to_string())),
+            );
+            let channel = load_dm(&mut art, valid.channel_id);
+            dm_revealed = Some((other, conversation(&art, channel)));
+        }
+    }
     state.dirty.set(true);
-    Ok(message)
+    Ok(Sent {
+        message,
+        audience,
+        dm_revealed,
+    })
 }
 
 fn now_ms() -> u64 {
@@ -962,13 +1154,13 @@ fn edit_message(
     req: proto::EditMessage,
     state: &AppState,
     user_id: Option<u64>,
-) -> Result<proto::Message, proto::Error> {
+) -> Result<(proto::Message, Audience), proto::Error> {
     let user_id = require_auth(user_id)?;
     let valid = validate::validate_edit_message(req)?;
 
     let mut art = state.art.borrow_mut();
     require_pseudo(&mut art, user_id)?;
-    check_text_channel(&mut art, valid.channel_id)?;
+    let audience = load_conversation(&mut art, valid.channel_id, user_id)?;
     let mut message = load_message(&mut art, valid.channel_id, valid.message_id)?;
     if message.user_id != user_id {
         return Err(proto::Error {
@@ -986,7 +1178,7 @@ fn edit_message(
     message.edited_at = now_ms();
     save_message(&mut art, &message);
     state.dirty.set(true);
-    Ok(message)
+    Ok((message, audience))
 }
 
 /// Stories 12 et 15 : messages d'id > `last_seen_id`, tombstones compris, triés par
@@ -997,9 +1189,9 @@ fn sync_messages(
     state: &AppState,
     user_id: Option<u64>,
 ) -> Result<proto::SyncResponse, proto::Error> {
-    require_auth(user_id)?;
+    let user_id = require_auth(user_id)?;
     let mut art = state.art.borrow_mut();
-    check_text_channel(&mut art, req.channel_id)?;
+    load_conversation(&mut art, req.channel_id, user_id)?;
     // Au-delà de la borne des clés, aucun message ne peut suivre `last_seen_id`.
     let messages = if keys::is_sortable(req.last_seen_id) {
         let prefix = keys::message_prefix(req.channel_id);
@@ -1021,23 +1213,29 @@ fn sync_messages(
 
 /// Stories 13-14 : tombstone, pas de suppression physique — le contenu est effacé,
 /// le message reste avec `deleted = true` pour que la resync le reflète. Droit :
-/// l'auteur, ou l'admin sur n'importe quel message. Supprimer un message déjà
-/// supprimé est accepté (idempotent) et rediffusé.
+/// l'auteur, ou l'admin sur n'importe quel message d'un salon — dans un DM, l'auteur
+/// seul (story 32). Supprimer un message déjà supprimé est accepté (idempotent) et
+/// rediffusé.
 fn delete_message(
     req: proto::DeleteMessage,
     state: &AppState,
     user_id: Option<u64>,
-) -> Result<proto::MessageDeleted, proto::Error> {
+) -> Result<(proto::MessageDeleted, Audience), proto::Error> {
     let user_id = require_auth(user_id)?;
     let mut art = state.art.borrow_mut();
     let user = require_pseudo(&mut art, user_id)?;
-    check_text_channel(&mut art, req.channel_id)?;
+    let audience = load_conversation(&mut art, req.channel_id, user_id)?;
 
     let mut message = load_message(&mut art, req.channel_id, req.message_id)?;
-    if message.user_id != user_id && !user.is_admin {
+    let admin_override = user.is_admin && matches!(audience, Audience::Everyone);
+    if message.user_id != user_id && !admin_override {
         return Err(proto::Error {
             code: 403,
-            message: "seuls l'auteur et l'admin peuvent supprimer ce message".to_string(),
+            message: match audience {
+                Audience::Everyone => "seuls l'auteur et l'admin peuvent supprimer ce message",
+                Audience::Participants(_) => "seul l'auteur peut supprimer ce message privé",
+            }
+            .to_string(),
         });
     }
 
@@ -1045,10 +1243,13 @@ fn delete_message(
     message.content.clear();
     save_message(&mut art, &message);
     state.dirty.set(true);
-    Ok(proto::MessageDeleted {
-        channel_id: req.channel_id,
-        message_id: req.message_id,
-    })
+    Ok((
+        proto::MessageDeleted {
+            channel_id: req.channel_id,
+            message_id: req.message_id,
+        },
+        audience,
+    ))
 }
 
 fn compute_accept(key: &str) -> String {

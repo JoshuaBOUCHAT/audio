@@ -1,4 +1,5 @@
-//! Encodage des ids dans les clés `channel:{id}` et `message:{ch}:{id}` : hexadécimal
+//! Encodage des ids dans les clés `channel:{id}`, `dm:{id}`, `user_dms:{user}:{autre}`
+//! et `message:{ch}:{id}` : hexadécimal
 //! minuscule (clés OxidArt ASCII) sur une longueur fixe, donc ordre des octets = ordre
 //! numérique, et `krange` d'oxidart rend directement les entrées triées par id.
 //!
@@ -31,6 +32,33 @@ pub const CHANNEL_PREFIX: &str = "channel:";
 pub fn channel_key(id: u64) -> String {
     let mut key = CHANNEL_PREFIX.to_string();
     key.push_str(&sortable_id(id));
+    key
+}
+
+/// Inverse de `sortable_id`, pour un id lu dans une clé.
+pub fn parse_sortable_id(hex: &[u8]) -> Option<u64> {
+    if hex.len() != SORTABLE_ID_LEN {
+        return None;
+    }
+    u64::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
+}
+
+/// DM (stories 28-32), sous un préfixe distinct de `channel:` : la liste des salons
+/// ne parcourt jamais les DM.
+pub fn dm_key(id: u64) -> String {
+    format!("dm:{}", sortable_id(id))
+}
+
+/// Mes DM : `krange` sur ce préfixe ne lit que les entrées de cet utilisateur.
+pub fn user_dms_prefix(user_id: u64) -> String {
+    format!("user_dms:{}:", sortable_id(user_id))
+}
+
+/// Entrée de `user_id` pour son DM avec `other` (valeur : id du DM) : « ai-je déjà un
+/// DM avec X ? » est un seul `get`.
+pub fn user_dm_key(user_id: u64, other: u64) -> String {
+    let mut key = user_dms_prefix(user_id);
+    key.push_str(&sortable_id(other));
     key
 }
 
@@ -67,6 +95,15 @@ mod tests {
     #[should_panic(expected = "au-delà de 2^36")]
     fn refuse_un_id_trop_grand() {
         sortable_id(MAX_SORTABLE_ID + 1);
+    }
+
+    #[test]
+    fn aller_retour_id_de_cle() {
+        for id in [0, 1, 255, MAX_SORTABLE_ID] {
+            assert_eq!(parse_sortable_id(sortable_id(id).as_bytes()), Some(id));
+        }
+        assert_eq!(parse_sortable_id(b"12"), None);
+        assert_eq!(parse_sortable_id(b"zzzzzzzzz"), None);
     }
 
     #[test]
