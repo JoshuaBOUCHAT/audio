@@ -31,7 +31,12 @@ cd back-end && cargo run -- ton@email     # https://127.0.0.1:8443, données dan
 cd front && npm run dev                   # http://localhost:5173/debug
 ```
 
-Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique pour …`).
+Comptes à mot de passe sur invitation (stories 65-68) : au premier lancement, le
+serveur affiche `[boot] compte admin … à créer : ouvrir /?invite=…` — ouvrir ce
+chemin sur le front (`http://localhost:5173/?invite=…` en dev) et créer le compte
+avec l'email du bootstrap. L'admin invite ensuite depuis Paramètres > Administration.
+Le pepper des mots de passe est dans `data/pepper` (le perdre invalide tous les mots
+de passe ; les liens de connexion de l'admin restent la sortie de secours).
 En build debug, connexion directe sans lien : tokens permanents
 `00000000-0000-0000-0000-00000000000N` (N = 1 à 9 ; 1 = admin du bootstrap, sinon
 `devN@dev.local`), boutons « Admin / Dev 2 / Dev 3 » sur l'écran de login de `npm run
@@ -76,6 +81,7 @@ dev`. Compilés hors d'un build release (`#[cfg(debug_assertions)]`).
 | `MessageBody.tsx` (vidéo) | lecteur intégré, lecture par plages avec ticket de lecture renouvelé, repli sur la carte fichier si le format n'est pas lisible (story 54) |
 | `SettingsPanel.tsx` / `sounds.ts` | menu Paramètres ⚙ (Profil, Apparence, Notifications) ; non-lus synchronisés (badges, onglets, titre), sons Web Audio, « Tout couper », popups OS en option (stories 56-60, back-end `reads.rs`) |
 | `NotifyMenus.tsx` | réglages de notification par personne (clic droit, carte de profil : DM et mentions, notifier / son) et par salon (bouton 🔔 / clic droit : tous / mentions / rien, son) (story 63) |
+| `Login.tsx` / `AdminSettings.tsx` | connexion email + mot de passe, création de compte sur `?invite=`, mot de passe dans le profil ; onglet Administration : invitations (durée, liste, révocation) et liens de connexion de dépannage (stories 65-68, back-end `accounts.rs`) |
 | `lib/theme.ts` | thème Système / Clair / Sombre (story 55) : `User.theme`, poussé à ses autres connexions, copie locale appliquée par un script inline d'`index.html` avant le chargement ; palette sombre bleutée dans `index.css` |
 | `zip-folder.ts` | fichiers de tout type et dossiers compressés en ZIP par fflate (chargé à la demande) ; carte nom / taille / nombre de fichiers ; téléchargement natif par ticket (stories 51-53) |
 | `Composer.tsx` / `MessageBody.tsx` / `media.ts` | images (stories 27, 45-50) : barre de saisie riche (texte et miniatures mélangés, bouton, Ctrl+V, glisser-déposer, Maj+Entrée) ; une image = lien `/media/{id}` dans le texte ; vue en grand, copier le lien, enregistrer, supprimer ici / pour tout le monde. Back-end : `http.rs`, `media.rs` (fichiers `data/media/{sha256}`, quota `AUDIO_MEDIA_QUOTA_GIB`) |

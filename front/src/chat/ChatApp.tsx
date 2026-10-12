@@ -1,13 +1,13 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
 import { BACK_END_URL } from "@/lib/config"
 import { ChatView } from "./ChatView"
-import { Login } from "./Login"
+import { InviteScreen, Login } from "./Login"
 import { PseudoScreen } from "./PseudoScreen"
-import { takeMagicLinkToken } from "./session"
+import { takeInviteToken, takeMagicLinkToken } from "./session"
 import { ChatStore } from "./store"
 
 export function ChatApp() {
-  const [store] = useState(() => new ChatStore(takeMagicLinkToken()))
+  const [store] = useState(() => new ChatStore(takeMagicLinkToken(), takeInviteToken()))
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
 
   useEffect(() => {
@@ -22,6 +22,8 @@ export function ChatApp() {
     return <ChatView state={state} store={store} />
   }
   if (state.phase === "login" || (state.phase === "authenticating" && !state.me)) {
+    // Story 66 : un lien d'invitation ouvre la création de compte.
+    if (state.invite) return <InviteScreen state={state} store={store} />
     return <Login state={state} store={store} />
   }
   return (

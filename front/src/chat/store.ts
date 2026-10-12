@@ -11,8 +11,15 @@ import {
   ProtocolClient,
   authRequest,
   createChannel,
+  acceptInvite,
+  createInvite,
+  createLoginLink,
   deleteMedia,
   deleteMessage,
+  listInvites,
+  passwordLogin,
+  revokeInvite,
+  setPassword,
   markRead,
   editMessage,
   getMedia,
@@ -20,7 +27,6 @@ import {
   requestDownload,
   openDm,
   getAvatar,
-  requestMagicLink,
   sendMessage,
   setAvatar,
   setBio,
@@ -108,8 +114,8 @@ export type ChatState = {
   messages: Record<number, ChatMessage[]>
   /** Dernière erreur à afficher (réponse Error du serveur ou échec réseau). */
   error: string | null
-  /** RequestMagicLink accepté : le lien a été émis côté serveur. */
-  linkSent: boolean
+  /** Story 65 : jeton d'invitation de l'URL, tant que le compte n'est pas créé. */
+  invite: string | null
 }
 
 const INITIAL: ChatState = {
@@ -127,7 +133,7 @@ const INITIAL: ChatState = {
   messages: {},
   history: {},
   error: null,
-  linkSent: false,
+  invite: null,
 }
 
 const RECONNECT_MAX_MS = 10_000
@@ -167,8 +173,9 @@ export class ChatStore {
   /** Clic sur une notification système : l'interface bascule sur la conversation. */
   onOpenConversation: ((channelId: number) => void) | null = null
 
-  constructor(magicToken: string | null) {
+  constructor(magicToken: string | null, inviteToken: string | null = null) {
     this.pendingMagicToken = magicToken
+    this.state = { ...INITIAL, invite: inviteToken }
   }
 
   // --- useSyncExternalStore ---
@@ -291,12 +298,6 @@ export class ChatStore {
 
   clearError = (): void => this.set({ error: null })
 
-  requestLink = async (email: string): Promise<void> => {
-    this.set({ error: null, linkSent: false })
-    const response = await this.request(requestMagicLink(email))
-    if (response) this.set({ linkSent: true })
-  }
-
   /** `fromLoginScreen` : un token refusé reste sur l'écran de login avec l'erreur. */
   login = async (token: string, fromLoginScreen = true): Promise<void> => {
     const client = this.client
@@ -316,6 +317,66 @@ export class ChatStore {
       this.set({ phase: "login", error: response.error?.message ?? "authentification refusée" })
       return
     }
+    this.onAuthenticated(auth)
+  }
+
+  /** Story 67 : email + mot de passe. */
+  loginWithPassword = (email: string, password: string): Promise<void> =>
+    this.authenticateWith(passwordLogin(email, password))
+
+  /** Story 66 : création du compte depuis l'invitation de l'URL. */
+  acceptInvite = (email: string, pseudo: string, password: string): Promise<void> => {
+    const invite = this.state.invite
+    if (!invite) return Promise.resolve()
+    return this.authenticateWith(acceptInvite(invite, email, pseudo, password), () => this.set({ invite: null }))
+  }
+
+  /** Story 67 : `current` vide si le compte n'a pas encore de mot de passe. */
+  setPassword = async (current: string, password: string): Promise<boolean> => {
+    this.set({ error: null })
+    const response = await this.request(setPassword(current, password))
+    if (!response?.passwordSet) return false
+    const me = this.state.me
+    if (me) this.set({ me: { ...me, hasPassword: true } })
+    return true
+  }
+
+  // --- administration (stories 65, 68) ---
+
+  createInvite = async (ttlSeconds: number): Promise<chat.IInvite | null> =>
+    (await this.request(createInvite(ttlSeconds)))?.inviteCreated?.invite ?? null
+
+  listInvites = async (): Promise<chat.IInvite[]> => (await this.request(listInvites()))?.invites?.invites ?? []
+
+  revokeInvite = async (token: string): Promise<boolean> => !!(await this.request(revokeInvite(token)))?.inviteRevoked
+
+  createLoginLink = async (userId: number, ttlSeconds: number): Promise<chat.ILoginLinkCreated | null> =>
+    (await this.request(createLoginLink(userId, ttlSeconds)))?.loginLinkCreated ?? null
+
+  /** Revenir à l'écran de connexion depuis celui d'une invitation. */
+  dropInvite = (): void => this.set({ invite: null, error: null })
+
+  private async authenticateWith(payload: ClientEnvelopeShape, onSuccess?: () => void): Promise<void> {
+    const client = this.client
+    if (!client) return
+    this.set({ phase: "authenticating", error: null })
+    let response: ServerEnvelope
+    try {
+      response = await client.request(payload)
+    } catch {
+      this.set({ phase: "login", error: "connexion perdue, réessaie" })
+      return
+    }
+    if (!response.authResponse) {
+      this.set({ phase: "login", error: response.error?.message ?? "authentification refusée" })
+      return
+    }
+    onSuccess?.()
+    this.onAuthenticated(response.authResponse)
+  }
+
+  /** Fin commune de toutes les portes d'entrée : session gardée, état chargé. */
+  private onAuthenticated(auth: chat.IAuthResponse): void {
     saveSessionToken(auth.sessionToken ?? "")
     this.sessionToken = auth.sessionToken ?? null
     const me = toMe(auth.me)
@@ -360,7 +421,6 @@ export class ChatStore {
       online: new Set((auth.onlineUserIds ?? []).map(toNumber)),
       messages: kept,
       avatars: {},
-      linkSent: false,
     })
     // Reconnexion : resync complète des salons encore ouverts.
     for (const id of Object.keys(kept).map(Number)) void this.sync(id)

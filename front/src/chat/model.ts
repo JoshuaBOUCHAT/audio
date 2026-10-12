@@ -18,6 +18,8 @@ export type Me = {
   bio: string
   /** Story 55 : thème choisi, mémorisé avec le compte. */
   theme: ThemeChoice
+  /** Story 67 : un compte venu d'un lien n'a pas encore de mot de passe. */
+  hasPassword: boolean
 }
 /** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
 export type Profile = { id: number; pseudo: string; avatarVersion: number; bio: string }
@@ -62,6 +64,7 @@ export function toMe(user: chat.IUser | null | undefined): Me {
     invisible: user?.status === chat.Status.INVISIBLE,
     bio: user?.bio ?? "",
     theme: toThemeChoice(user?.theme),
+    hasPassword: user?.hasPassword ?? false,
   }
 }
 

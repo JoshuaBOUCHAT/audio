@@ -21,6 +21,7 @@ message User {
   Status status = 6;         // story 41 : choix mémorisé, jamais transmis aux autres
   string bio = 7;            // story 43 : description, vide = aucune
   Theme theme = 8;           // story 55 : préférence privée, jamais transmise aux autres
+  bool has_password = 9;     // story 67 : renseigné à l'envoi de `me` (le hash vit à part)
 }
 
 // Story 55.

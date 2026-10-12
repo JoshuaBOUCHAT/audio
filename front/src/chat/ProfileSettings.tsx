@@ -133,9 +133,84 @@ export function ProfileSettings({ state, store }: { state: ChatState; store: Cha
         </div>
       </form>
 
+      <PasswordForm state={state} store={store} />
+
       <p className="text-xs text-muted-foreground">Connecté avec {me.email} (visible de toi seul).</p>
       {state.error && <p className="text-sm text-destructive">{state.error}</p>}
       {notice && !state.error && <p className="text-sm text-muted-foreground">{notice}</p>}
     </div>
+  )
+}
+
+/**
+ * Story 67 : définir (compte venu d'un lien) ou changer son mot de passe. Le champ
+ * email caché aide le gestionnaire de mots de passe à associer le nouveau.
+ */
+function PasswordForm({ state, store }: { state: ChatState; store: ChatStore }) {
+  const me = state.me!
+  const [current, setCurrent] = useState("")
+  const [password, setPassword] = useState("")
+  const [confirm, setConfirm] = useState("")
+  const [done, setDone] = useState(false)
+  const mismatch = confirm !== "" && confirm !== password
+  return (
+    <form
+      className="flex flex-col gap-1.5"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        setDone(false)
+        if (mismatch) return
+        if (await store.setPassword(current, password)) {
+          setCurrent("")
+          setPassword("")
+          setConfirm("")
+          setDone(true)
+        }
+      }}
+    >
+      <span className="text-sm font-medium">Mot de passe</span>
+      {!me.hasPassword && (
+        <p className="text-xs text-muted-foreground">
+          Ton compte n'a pas encore de mot de passe : définis-en un pour te connecter avec ton email.
+        </p>
+      )}
+      <input type="email" name="email" autoComplete="username" value={me.email} readOnly hidden />
+      {me.hasPassword && (
+        <Input
+          type="password"
+          autoComplete="current-password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+          placeholder="mot de passe actuel"
+          required
+        />
+      )}
+      <Input
+        type="password"
+        autoComplete="new-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="nouveau mot de passe (8 caractères min)"
+        minLength={8}
+        required
+      />
+      <Input
+        type="password"
+        autoComplete="new-password"
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        placeholder="confirmer"
+        aria-invalid={mismatch}
+        required
+      />
+      <div className="flex items-center justify-between">
+        <span className={mismatch ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+          {mismatch ? "Les deux mots de passe diffèrent." : done ? "Mot de passe enregistré." : ""}
+        </span>
+        <Button type="submit" size="sm" disabled={mismatch}>
+          {me.hasPassword ? "Changer" : "Définir"}
+        </Button>
+      </div>
+    </form>
   )
 }

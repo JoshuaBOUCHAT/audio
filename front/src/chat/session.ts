@@ -27,12 +27,22 @@ export function clearSessionToken(): void {
   }
 }
 
-/** Token de lien magique passé en `?token=` ; retiré de l'URL pour ne pas le rejouer. */
-export function takeMagicLinkToken(): string | null {
+/** Paramètre d'URL lu une fois puis retiré de l'URL, pour ne pas le rejouer. */
+function takeUrlParam(name: string): string | null {
   const url = new URL(window.location.href)
-  const token = url.searchParams.get("token")
-  if (!token) return null
-  url.searchParams.delete("token")
+  const value = url.searchParams.get(name)
+  if (!value) return null
+  url.searchParams.delete(name)
   window.history.replaceState(null, "", url)
-  return token
+  return value
+}
+
+/** Lien de connexion (story 68) : `?token=`. */
+export function takeMagicLinkToken(): string | null {
+  return takeUrlParam("token")
+}
+
+/** Lien d'invitation (story 65) : `?invite=`. */
+export function takeInviteToken(): string | null {
+  return takeUrlParam("invite")
 }

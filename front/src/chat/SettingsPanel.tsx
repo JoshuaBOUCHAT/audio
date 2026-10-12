@@ -2,19 +2,21 @@
 // extensible (vidéo, audio…). Chaque onglet est une section indépendante.
 
 import { useEffect, useState } from "react"
-import { Bell, BellOff, Monitor, Moon, Palette, Play, Sun, User, VolumeX, X } from "lucide-react"
+import { Bell, BellOff, Monitor, Moon, Palette, Play, ShieldCheck, Sun, User, VolumeX, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { AdminSettings } from "./AdminSettings"
 import { ProfileSettings } from "./ProfileSettings"
 import { playSound, SOUNDS } from "./sounds"
 import type { ChatState, ChatStore } from "./store"
 
-export type SettingsTab = "profile" | "appearance" | "notifications"
+export type SettingsTab = "profile" | "appearance" | "notifications" | "admin"
 
 const TABS = [
   { id: "profile", label: "Profil", Icon: User },
   { id: "appearance", label: "Apparence", Icon: Palette },
   { id: "notifications", label: "Notifications", Icon: Bell },
+  { id: "admin", label: "Administration", Icon: ShieldCheck },
 ] as const
 
 export function SettingsPanel({
@@ -48,7 +50,7 @@ export function SettingsPanel({
           <span className="px-2 pt-1 pb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
             Paramètres
           </span>
-          {TABS.map(({ id, label, Icon }) => (
+          {TABS.filter((t) => t.id !== "admin" || state.me?.isAdmin).map(({ id, label, Icon }) => (
             <button
               key={id}
               type="button"
@@ -74,6 +76,7 @@ export function SettingsPanel({
             {tab === "profile" && <ProfileSettings state={state} store={store} />}
             {tab === "appearance" && <AppearanceSettings state={state} store={store} />}
             {tab === "notifications" && <NotificationSettings state={state} store={store} />}
+            {tab === "admin" && state.me?.isAdmin && <AdminSettings state={state} store={store} />}
           </div>
         </section>
       </div>
