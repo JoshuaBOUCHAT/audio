@@ -205,19 +205,37 @@ export class ChatStore {
       return
     }
     saveSessionToken(auth.sessionToken ?? "")
-    const loaded = Object.keys(this.state.messages).map(Number)
     const me = toMe(auth.me)
     const users: Record<number, Profile> = {}
     for (const p of auth.users ?? []) users[toNumber(p.id)] = toProfile(p)
+    const channels = (auth.channels ?? []).filter(isTextChannel).map(toChannel)
+
+    // Tout ce qui précède cette auth est périmé : le serveur a pu redémarrer sur une
+    // autre base, où les mêmes ids (compteur global) désignent d'autres salons,
+    // messages et photos. On ne garde que les salons ouverts qui existent encore,
+    // pour le même compte, le temps que leur resync les remplace.
+    const sameAccount = this.state.me?.id === me.id
+    const kept: Record<number, ChatMessage[]> = {}
+    if (sameAccount) {
+      for (const c of channels) {
+        if (this.state.messages[c.id]) kept[c.id] = this.state.messages[c.id]
+      }
+    }
+    // Les versions de photo viennent du même compteur : cache vidé, rechargé à la demande.
+    for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
+    this.avatarRequests.clear()
+
     this.set({
       phase: me.pseudo ? "ready" : "pseudo",
       me,
       users,
-      channels: (auth.channels ?? []).filter(isTextChannel).map(toChannel),
+      channels,
+      messages: kept,
+      avatars: {},
       linkSent: false,
     })
-    // Reconnexion : resync complète des salons déjà ouverts.
-    for (const id of loaded) void this.sync(id)
+    // Reconnexion : resync complète des salons encore ouverts.
+    for (const id of Object.keys(kept).map(Number)) void this.sync(id)
   }
 
   logout = (): void => {
@@ -237,8 +255,12 @@ export class ChatStore {
     const response = await this.request(syncRequest(channelId, 0))
     const sync = response?.syncResponse
     if (!sync) return
+    // Resync depuis 0 = état complet du salon : il remplace la copie locale (pas de
+    // fusion, qui garderait des messages disparus du serveur). Un broadcast reçu avant
+    // cette réponse a été traité avant elle côté serveur (même file d'envoi), donc il
+    // y est déjà ; ceux qui suivent se fusionnent normalement.
     const synced = (sync.messages ?? []).map(toMessage)
-    this.setMessages(channelId, (current) => mergeMessages(current, synced))
+    this.setMessages(channelId, () => synced)
   }
 
   /** `replyToId` : message cité (story 39), 0 = pas une réponse. */
