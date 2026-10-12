@@ -258,6 +258,38 @@ Ajoutées le 2026-10-12 (51-53), dans la continuité des images (§ Images).
     basculent en direct. Copie locale du dernier thème, appliquée avant le chargement
     de l'app : pas d'écran blanc furtif au démarrage en sombre.
 
+### Notifications et paramètres
+
+Ajoutées le 2026-10-12.
+
+56. En tant qu'utilisateur, je veux voir un **compteur de messages non lus** à côté de
+    chaque salon et de chaque personne (liste Privé), et le total sur les onglets
+    Salons / Privé et le titre de la page ; ouvrir la conversation la marque lue.
+    **Décisions** : état « lu » **sur le serveur**, synchronisé entre mes appareils
+    (lire sur l'un efface le badge sur les autres) : dernier message lu par
+    conversation (`read:{moi}:{conversation}`, ne fait qu'avancer). Le compte se fait
+    par `krange` à partir du dernier lu — seuls les non-lus sont parcourus — et
+    s'arrête à 100 (« 99+ »). Ne comptent que les messages des autres, non
+    supprimés. Sans marqueur, tout est non lu.
+57. En tant qu'utilisateur, je veux un **son** quand un message arrive (salon ou DM)
+    et que je ne regarde pas cette conversation, en choisissant parmi plusieurs sons
+    ou aucun. **Décisions** : sons synthétisés dans le navigateur (Web Audio), pas de
+    fichiers à héberger ; au plus un son par seconde.
+58. En tant qu'utilisateur, je veux régler les notifications **par conversation**
+    (un salon, ou une personne via notre DM) : couper complètement, ou seulement le
+    son ; et un bouton **« Tout couper »** qui règle chaque conversation sur muet
+    une par une, pour pouvoir ensuite n'en réactiver qu'une.
+    **Décisions** : une conversation coupée garde son compteur (grisé), sans son ni
+    popup. Une conversation créée après « Tout couper » n'est pas coupée.
+59. En tant qu'utilisateur, je veux en option des **notifications système** (popup de
+    l'OS) quand l'app n'est pas au premier plan ; cliquer dessus ouvre la
+    conversation. Désactivées par défaut, autorisation du navigateur demandée à
+    l'activation.
+60. En tant qu'utilisateur, je veux un **menu Paramètres** (bouton ⚙ en bas à gauche)
+    regroupant Profil, Apparence et Notifications, extensible plus tard (vidéo,
+    audio…). **Décisions** : réglages de notification mémorisés avec le compte
+    (`settings:{moi}`), poussés à mes autres appareils, comme le thème (story 55).
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.

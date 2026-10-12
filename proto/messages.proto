@@ -114,6 +114,28 @@ message MediaUploaded {
   uint64 quota_total = 3;
 }
 
+// Stories 57-60 : réglages de notification, mémorisés avec le compte, jamais transmis
+// aux autres. Un nouveau champ va toujours à la fin (persisté en bincode, codec.rs).
+message Settings {
+  string sound = 1;                    // id d'un son du client ("pop", "ding"…), "" = aucun
+  bool desktop_notifications = 2;      // story 59 : popups OS
+  repeated NotificationRule rules = 3; // story 58 : une règle par conversation réglée
+}
+
+// Story 58 : réglage d'une conversation (salon ou DM). Absente = tout activé.
+message NotificationRule {
+  uint64 channel_id = 1;
+  bool muted = 2;  // ni son ni popup, compteur grisé
+  bool silent = 3; // popup mais pas de son
+}
+
+// Story 56 : non-lus d'une conversation à la connexion.
+message Unread {
+  uint64 channel_id = 1;
+  uint64 last_read_id = 2; // 0 = jamais lu
+  uint32 count = 3;        // messages des autres, non supprimés, plafonné à 100
+}
+
 // ═══════════════════════════════════
 // CLIENT → SERVEUR
 // ═══════════════════════════════════
@@ -138,6 +160,8 @@ message ClientEnvelope {
     GetMedia          get_media          = 16; // story 51
     RequestDownload   request_download   = 17; // story 53
     SetTheme          set_theme          = 18; // story 55
+    MarkRead          mark_read          = 19; // story 56
+    SetSettings       set_settings       = 20; // stories 57-60
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -227,6 +251,19 @@ message RequestDownload {
   bool inline = 2;
 }
 
+// Story 56 : tout jusqu'à `message_id` compris est lu (le marqueur ne recule jamais).
+// Réponse : ReadMarked, aussi poussé à mes autres connexions.
+message MarkRead {
+  uint64 channel_id = 1;
+  uint64 message_id = 2;
+}
+
+// Stories 57-60 : remplace tous mes réglages. Réponse : SettingsSet, aussi poussé à
+// mes autres connexions.
+message SetSettings {
+  Settings settings = 1;
+}
+
 // Story 55. Réponse : ThemeSet, aussi poussé à mes autres connexions.
 message SetTheme {
   Theme theme = 1;
@@ -281,6 +318,8 @@ message ServerEnvelope {
     MediaInfo       media_info        = 16;
     DownloadTicket  download_ticket   = 17;
     ThemeSet        theme_set         = 18;
+    ReadMarked      read_marked       = 19;
+    SettingsSet     settings_set      = 20;
   }
 }
 
@@ -303,6 +342,9 @@ message AuthResponse {
   // Story 30 : mes conversations privées (celles que j'ai ouvertes ou qui ont reçu un
   // message), non triées.
   repeated Conversation dms = 6;
+  // Story 56 : non-lus de chaque conversation visible (salons et mes DM).
+  repeated Unread unread = 7;
+  Settings settings = 8; // stories 57-60
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -342,6 +384,16 @@ message UserUpdated {
 // participants (story 29).
 message DmOpened {
   Conversation conversation = 1;
+}
+
+// Story 56 : à moi et à mes autres connexions seulement.
+message ReadMarked {
+  uint64 channel_id = 1;
+  uint64 last_read_id = 2; // marqueur effectif (jamais en arrière)
+}
+
+message SettingsSet {
+  Settings settings = 1;
 }
 
 // Story 55 : thème choisi, à l'auteur et à ses autres connexions seulement.
