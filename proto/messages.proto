@@ -18,6 +18,14 @@ message User {
   bool is_admin = 3;
   string pseudo = 4;         // vide tant que non choisi (story 34)
   uint64 avatar_version = 5; // 0 = pas de photo (story 37)
+  Status status = 6;         // story 41 : choix mémorisé, jamais transmis aux autres
+}
+
+// Story 41 : statut choisi. « Hors ligne » n'en est pas un : c'est ce que voient les
+// autres quand on est déconnecté ou invisible (cf. PresenceChanged).
+enum Status {
+  ONLINE = 0;
+  INVISIBLE = 1;
 }
 
 // Profil public d'un utilisateur, tel que les autres le voient (story 36) : jamais
@@ -75,6 +83,7 @@ message ClientEnvelope {
     SetAvatar         set_avatar         = 9; // story 37
     GetAvatar         get_avatar         = 10; // story 36
     EditMessage       edit_message       = 11; // story 40
+    SetStatus         set_status         = 12; // story 41
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -132,6 +141,12 @@ message SetPseudo {
   string pseudo = 1;
 }
 
+// Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
+// suite (story 41).
+message SetStatus {
+  Status status = 1;
+}
+
 // Image déjà recadrée/réduite par le client : PNG, JPEG ou WebP, ≤ 256 Kio.
 // `image` vide = retirer la photo. Réponse : UserUpdated (aussi diffusé).
 message SetAvatar {
@@ -168,6 +183,8 @@ message ServerEnvelope {
     UserUpdated     user_updated      = 9;
     Avatar          avatar            = 10;
     MessageEdited   message_edited    = 11;
+    StatusSet       status_set        = 12;
+    PresenceChanged presence_changed  = 13;
   }
 }
 
@@ -184,6 +201,9 @@ message AuthResponse {
   string session_token = 3;
   // Profils de tous les utilisateurs qui ont choisi un pseudo (story 36), `me` compris.
   repeated UserProfile users = 4;
+  // Story 23 : utilisateurs vus en ligne par les autres à cet instant (ni invisibles,
+  // ni dans leurs 15 premières secondes, story 42). Peut inclure `me`.
+  repeated uint64 online_user_ids = 5;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -215,6 +235,18 @@ message ChannelCreated {
 // réponse directe à l'auteur du changement.
 message UserUpdated {
   UserProfile profile = 1;
+}
+
+// Ack de SetStatus, à l'auteur seul (le statut n'est jamais transmis aux autres).
+message StatusSet {
+  Status status = 1;
+}
+
+// Story 23 : un utilisateur apparaît en ligne ou hors ligne pour les autres (délais
+// et invisibilité déjà appliqués par le serveur, story 42). Diffusé à tous.
+message PresenceChanged {
+  uint64 user_id = 1;
+  bool online = 2;
 }
 
 message Avatar {

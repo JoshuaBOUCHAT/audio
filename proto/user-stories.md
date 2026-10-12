@@ -135,6 +135,36 @@ Numérotées à la suite (34+), même convention que les stories 28 et 33.
     photo est conçue pour ça : un id tiré du compteur global à chaque changement, qui
     sert aujourd'hui de clé de cache côté client et demain de paramètre d'URL.
 
+### Présence
+
+Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.
+« En train d'écrire » (story 24) reste post-v1, pas de statut « absent ».
+
+23. En tant qu'utilisateur, je veux voir à droite la liste des membres, groupés par
+    statut (« En ligne — N » puis « Hors ligne — N »), triés par pseudo, avec leur
+    photo et un indicateur de statut, mis à jour en temps réel.
+41. En tant qu'utilisateur, je veux choisir mon statut entre **En ligne** et
+    **Invisible** : invisible, je reste connecté et peux tout faire, mais les autres
+    me voient hors ligne. « Hors ligne » n'est pas un choix, c'est l'état vu par les
+    autres quand je ne suis pas connecté ou que je suis invisible.
+    **Décisions** : le choix est **mémorisé** avec le compte (on reste invisible
+    d'une connexion à l'autre). Le statut d'un autre n'est jamais transmis tel quel :
+    les autres reçoivent seulement « en ligne / hors ligne », donc rien ne distingue
+    un invisible d'un absent. Limite assumée : un invisible qui écrit se trahit par
+    ses messages (comme sur Discord).
+42. En tant qu'utilisateur, je veux qu'on ne me voie pas en ligne pendant les **15 s**
+    qui suivent ma connexion, pour pouvoir passer invisible sans que les autres
+    m'aient vu arriver ; et qu'une coupure courte (refresh, réseau) ne me fasse pas
+    clignoter hors ligne.
+    **Décisions** : la présence est un **état de connexion en mémoire** dans le
+    serveur, pas une donnée OxidArt (rien à retrouver après un redémarrage, où tout le
+    monde se reconnecte). En ligne = au moins une connexion authentifiée (plusieurs
+    onglets/appareils, story 5) et statut En ligne. Annonce « en ligne » 15 s après la
+    première connexion si elle tient toujours ; annonce « hors ligne » 15 s après la
+    dernière déconnexion si personne ne s'est reconnecté — une reconnexion pendant ce
+    délai ne refait pas les 15 s d'attente. Passer invisible annonce « hors ligne »
+    tout de suite ; repasser En ligne annonce « en ligne » tout de suite si connecté.
+
 ### Messages privés (DM)
 
 Numérotées à la suite (28+) pour ne pas décaler les stories 18-27 déjà référencées
@@ -216,7 +246,7 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
 
 ### Présence
 
-23. En tant qu'utilisateur, je veux voir qui est actuellement connecté au serveur.
+23. *(remontée en v1 le 2026-10-12, voir § Présence de la partie V1)*
 24. En tant qu'utilisateur, je veux voir un indicateur "en train d'écrire".
 
 ### Sécurité / gestion de compte

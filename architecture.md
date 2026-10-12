@@ -209,7 +209,7 @@ WebSocket est utilisé pour **tout le plan de contrôle** :
 - Messages texte (Protobuf encodé en binary frames)
 - Signaling WebRTC (SDP offer/answer, ICE candidates)
 - Synchronisation DB (SyncRequest/SyncResponse)
-- Présence (UserJoined/UserLeft)
+- Présence (`PresenceChanged`, stories 23, 41-42 : état en mémoire, pas dans OxidArt)
 
 **Text frames** → Protobuf → messages structurés
 **Binary frames** → bytes bruts → frames Opus audio + H264 vidéo

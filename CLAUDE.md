@@ -150,7 +150,9 @@ Opérations messages v1 :
 - Édition par l'auteur seul, mention « (modifié) », pas d'historique (story 40,
   ajoutée le 2026-10-12 — remplace « pas d'édition en v1 »). Réponse à un message
   (story 39).
-- Pas de présence (online/offline/typing) en v1.
+- Présence (stories 23, 41-42, remontée en v1 le 2026-10-12) : liste des membres
+  en ligne / hors ligne, statut En ligne ou Invisible, annonce retardée de 15 s. Pas
+  de « en train d'écrire » ni de statut absent.
 - Pas de pièces jointes/images en v1.
 
 Création de salon : **admin uniquement** (pas de rôles/permissions granulaires — c'est
@@ -224,4 +226,4 @@ rustls-acme supporte TLS-ALPN-01 nativement.
 
 Modération/rôles/permissions granulaires, notifications push, recherche full-text,
 multi-serveur/fédération, HTTP/3, réactions/emojis custom, pièces jointes (v1),
-présence (v1), rate limiting métier (v1).
+« en train d'écrire » (v1), rate limiting métier (v1).
