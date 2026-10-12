@@ -41,6 +41,16 @@ const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // limiter le risque si les logs fuitent, assez long pour qu'un ami aille chercher le
 // lien transmis à la main en v1).
 const MAGIC_LINK_TTL: Duration = Duration::from_secs(15 * 60);
+/// Story 69 : intervalle du ping serveur ; une connexion silencieuse pendant trois
+/// intervalles (aucune trame, pas même un pong) est morte. `AUDIO_HEARTBEAT_MS` le
+/// raccourcit (tests).
+fn ping_every() -> Duration {
+    env::var("AUDIO_HEARTBEAT_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(15))
+}
 
 /// État partagé entre toutes les connexions (single-thread monoio, cf. CLAUDE.md
 /// § OxidArt) : cloner (`Rc::clone` implicite pour `art`) dans chaque tâche spawnée,
@@ -123,6 +133,16 @@ async fn main() {
 
     // `AUDIO_LISTEN` : autre adresse que celle de dev, ex. un second serveur de test.
     let listen = env::var("AUDIO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
+    // Story 69 : un seul minuteur pour tout le serveur, pas un par connexion.
+    let registry = state.registry.clone();
+    monoio::spawn(async move {
+        let ping = ws::encode_frame(0x9, &[]);
+        loop {
+            monoio::time::sleep(ping_every()).await;
+            registry::ping_all(&registry, &ping);
+        }
+    });
+
     let listener = TcpListener::bind(&listen).unwrap_or_else(|e| panic!("bind {listen}: {e}"));
     println!("en écoute sur https://{listen} (cert auto-signé, le navigateur va alerter)");
 
@@ -195,7 +215,12 @@ async fn read_loop(
                 _ => {} // texte/ping/pong non gérés à ce stade
             }
         }
-        let (res, c) = read.read(chunk).await;
+        // Story 69 : aucune trame (pas même un pong) depuis trois pings : connexion morte.
+        let dead_after = ping_every() * 3;
+        let Ok((res, c)) = monoio::time::timeout(dead_after, read.read(chunk)).await else {
+            println!("[ws] connexion silencieuse depuis {dead_after:?} : fermée");
+            return;
+        };
         chunk = c;
         match res {
             Ok(0) | Err(_) => return,
@@ -409,6 +434,7 @@ fn handle_client_envelope(
                 Err(err) => proto::server_envelope::Payload::Error(err),
             }
         }
+        Some(Payload::Heartbeat(_)) => proto::server_envelope::Payload::HeartbeatAck(proto::HeartbeatAck {}),
         Some(Payload::SetPseudo(req)) => match set_pseudo(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),

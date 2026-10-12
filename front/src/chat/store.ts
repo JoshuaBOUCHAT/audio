@@ -16,6 +16,7 @@ import {
   markRead,
   editMessage,
   getMedia,
+  heartbeat,
   requestDownload,
   openDm,
   getAvatar,
@@ -130,6 +131,9 @@ const INITIAL: ChatState = {
 }
 
 const RECONNECT_MAX_MS = 10_000
+/** Story 69 : heartbeat client (le ping serveur, lui, est invisible depuis JS). */
+const HEARTBEAT_EVERY_MS = 20_000
+const HEARTBEAT_TIMEOUT_MS = 10_000
 /** Story 64 : messages par page d'historique. */
 const PAGE_SIZE = 64
 
@@ -145,6 +149,7 @@ export class ChatStore {
   private socket: WebSocket | null = null
   private client: ProtocolClient | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private reconnectDelay = 500
   private disposed = false
   /** Token de lien magique lu dans l'URL, consommé à la première connexion. */
@@ -192,6 +197,7 @@ export class ChatStore {
 
   dispose(): void {
     this.disposed = true
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     window.removeEventListener("focus", this.markActiveRead)
     document.removeEventListener("visibilitychange", this.markActiveRead)
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
@@ -213,16 +219,42 @@ export class ChatStore {
       this.reconnectDelay = 500
       void this.authenticate()
     })
-    socket.addEventListener("close", () => {
-      client.failPending(new Error("connexion fermée"))
-      if (this.socket !== socket) return
-      this.socket = null
-      this.client = null
-      if (this.disposed) return
-      this.set({ phase: this.state.me ? "offline" : "connecting" })
-      this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay)
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS)
-    })
+    socket.addEventListener("close", () => this.lost(socket, client))
+    this.startHeartbeat(socket, client)
+  }
+
+  /** Connexion perdue (fermée, ou déclarée morte par le heartbeat) : reconnexion. */
+  private lost(socket: WebSocket, client: ProtocolClient): void {
+    client.failPending(new Error("connexion fermée"))
+    if (this.socket !== socket) return
+    this.socket = null
+    this.client = null
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    if (this.disposed) return
+    this.set({ phase: this.state.me ? "offline" : "connecting" })
+    this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay)
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS)
+  }
+
+  /**
+   * Story 69 : un réseau perdu sans fermeture propre laisse la socket « ouverte » de
+   * longues minutes. Toutes les 20 s (onglet visible), un Heartbeat sans réponse sous
+   * 10 s déclare la connexion morte et relance aussitôt — sans attendre la fermeture
+   * d'une socket qui ne répondra plus.
+   */
+  private startHeartbeat(socket: WebSocket, client: ProtocolClient): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = setInterval(() => {
+      if (document.hidden || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+      const deadline = setTimeout(() => {
+        this.lost(socket, client)
+        socket.close()
+      }, HEARTBEAT_TIMEOUT_MS)
+      client.request(heartbeat()).then(
+        () => clearTimeout(deadline),
+        () => clearTimeout(deadline),
+      )
+    }, HEARTBEAT_EVERY_MS)
   }
 
   /** Lien magique de l'URL en priorité, sinon session stockée, sinon écran de login. */

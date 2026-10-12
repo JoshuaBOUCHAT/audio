@@ -192,21 +192,22 @@ message ClientEnvelope {
     SetTheme          set_theme          = 18; // story 55
     MarkRead          mark_read          = 19; // story 56
     SetSettings       set_settings       = 20; // stories 57-60
-    Heartbeat         heartbeat          = 21; // story 69
-    PasswordLogin     password_login     = 22; // story 67
-    AcceptInvite      accept_invite      = 23; // story 66
-    SetPassword       set_password       = 24; // story 67
-    CreateInvite      create_invite      = 25; // story 65 (admin)
-    ListInvites       list_invites       = 26; // story 65 (admin)
-    RevokeInvite      revoke_invite      = 27; // story 65 (admin)
-    CreateLoginLink   create_login_link  = 28; // story 68 (admin)
-
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
-    // --- réservé post-v1, structure indicative seulement ---
-    // JoinVoice    join_voice    = 20; // story 18
-    // LeaveVoice   leave_voice   = 21; // story 21
-    // IceCandidate ice_candidate = 23; // story 18
+    Heartbeat         heartbeat          = 29; // story 69
+    PasswordLogin     password_login     = 30; // story 67
+    AcceptInvite      accept_invite      = 31; // story 66
+    SetPassword       set_password       = 32; // story 67
+    CreateInvite      create_invite      = 33; // story 65 (admin)
+    ListInvites       list_invites       = 34; // story 65 (admin)
+    RevokeInvite      revoke_invite      = 35; // story 65 (admin)
+    CreateLoginLink   create_login_link  = 36; // story 68 (admin)
+
+    // --- réservé post-v1, structure indicative seulement (numéros libres à partir
+    // de 40 ; 20, 21 et 23, d'abord envisagés ici, ont été pris entre-temps) ---
+    // JoinVoice    join_voice    = 40; // story 18
+    // LeaveVoice   leave_voice   = 41; // story 21
+    // IceCandidate ice_candidate = 42; // story 18
   }
 }
 

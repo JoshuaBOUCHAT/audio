@@ -53,6 +53,11 @@ export function openDm(userId: number): ClientEnvelopeShape {
   return { payload: "openDm", openDm: { userId } };
 }
 
+/** Story 69 : « tu es là ? ». */
+export function heartbeat(): ClientEnvelopeShape {
+  return { payload: "heartbeat", heartbeat: {} };
+}
+
 /** Story 56 : tout jusqu'à `messageId` compris est lu. */
 export function markRead(channelId: number, messageId: number): ClientEnvelopeShape {
   return { payload: "markRead", markRead: { channelId, messageId } };

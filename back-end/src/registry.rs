@@ -38,6 +38,8 @@ struct Conn {
 #[derive(Default)]
 pub struct Registry {
     conns: GenArena<Conn>,
+    /// Toutes les connexions ouvertes, authentifiées ou non : cibles du ping (story 69).
+    open: Vec<ConnId>,
     /// Connexions dont l'`AuthRequest` a été acceptée, avec leur utilisateur : seules
     /// destinataires des broadcasts, et de la livraison ciblée des DM (story 29).
     /// GenArena n'est pas itérable, et c'est le seul parcours utile.
@@ -46,11 +48,13 @@ pub struct Registry {
 
 impl Registry {
     pub fn insert(&mut self, write: OwnedWriteHalf<TlsStream>) -> ConnId {
-        ConnId(self.conns.insert(Conn {
+        let id = ConnId(self.conns.insert(Conn {
             write: Some(write),
             pending: Vec::new(),
             spare: Some(Vec::new()),
-        }))
+        }));
+        self.open.push(id);
+        id
     }
 
     /// Fermeture : la moitié écriture est lâchée ici, ou par la `write_task` en vol
@@ -58,6 +62,7 @@ impl Registry {
     pub fn remove(&mut self, id: ConnId) {
         self.conns.remove(id.0);
         self.authenticated.retain(|&(a, _)| a != id);
+        self.open.retain(|&a| a != id);
     }
 
     /// Idempotent : une reprise de session sur une connexion déjà authentifiée ne
@@ -108,7 +113,7 @@ pub fn send_to_users(registry: &SharedRegistry, users: &[u64], except: Option<Co
 fn push_to(registry: &SharedRegistry, target: impl Fn(ConnId, u64) -> bool, frame: &[u8]) {
     let targets: Vec<ConnId> = {
         let mut reg = registry.borrow_mut();
-        let Registry { conns, authenticated } = &mut *reg;
+        let Registry { conns, authenticated, .. } = &mut *reg;
         authenticated
             .iter()
             .filter(|&&(id, user)| target(id, user))
@@ -119,6 +124,24 @@ fn push_to(registry: &SharedRegistry, target: impl Fn(ConnId, u64) -> bool, fram
                 }
             })
             .collect()
+    };
+    for id in targets {
+        trigger_write(registry, id);
+    }
+}
+
+/// Story 69 : ping WebSocket à toutes les connexions ouvertes (le navigateur répond
+/// seul par un pong, même onglet en arrière-plan).
+pub fn ping_all(registry: &SharedRegistry, frame: &[u8]) {
+    let targets: Vec<ConnId> = {
+        let mut reg = registry.borrow_mut();
+        let Registry { conns, open, .. } = &mut *reg;
+        for id in open.iter() {
+            if let Some(conn) = conns.get_mut(id.0) {
+                conn.pending.extend_from_slice(frame);
+            }
+        }
+        open.clone()
     };
     for id in targets {
         trigger_write(registry, id);
