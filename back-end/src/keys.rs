@@ -1,10 +1,9 @@
-//! Encodage des ids dans les clés `message:{ch}:{id}` : hexadécimal minuscule (clés
-//! OxidArt ASCII) sur une longueur fixe, donc ordre des octets = ordre numérique.
+//! Encodage des ids dans les clés `channel:{id}` et `message:{ch}:{id}` : hexadécimal
+//! minuscule (clés OxidArt ASCII) sur une longueur fixe, donc ordre des octets = ordre
+//! numérique, et `krange` d'oxidart rend directement les entrées triées par id.
 //!
-//! Base 16 plutôt que base64 : au plus 16 enfants par nœud de l'ART, ce qui garde
-//! bon marché un futur parcours ordonné côté oxidart (recherche linéaire du plus petit
-//! enfant à chaque nœud). En attendant ce parcours, `getn` renvoie les clés dans
-//! l'ordre d'insertion (modifié par un reload du dump) et les appelants trient par id.
+//! Base 16 plutôt que base64 : au plus 16 enfants par nœud de l'ART, la taille que la
+//! recherche d'enfants SWAR d'oxidart traite le plus vite.
 //!
 //! 9 caractères = 16⁹ = 2³⁶ ≈ 69 milliards d'ids : le compteur reste un u64, mais un
 //! serveur entre amis n'approchera jamais cette borne (18 000 ans à 10 000
@@ -13,13 +12,29 @@
 pub const SORTABLE_ID_LEN: usize = 9;
 const MAX_SORTABLE_ID: u64 = (1 << (4 * SORTABLE_ID_LEN)) - 1;
 
+/// Vrai si `id` tient dans une clé. Les ids venus du client doivent passer par ici
+/// avant `channel_key` / `message_key` : un id hors borne ne peut désigner aucune
+/// entrée existante (le compteur n'y arrive jamais), et paniquer arrêterait le serveur.
+pub fn is_sortable(id: u64) -> bool {
+    id <= MAX_SORTABLE_ID
+}
+
 /// Panique au-delà de 2³⁶ − 1 plutôt que de produire une clé tronquée, mal triée.
 pub fn sortable_id(id: u64) -> String {
-    assert!(id <= MAX_SORTABLE_ID, "id {id} au-delà de 2^36 : élargir SORTABLE_ID_LEN");
+    assert!(is_sortable(id), "id {id} au-delà de 2^36 : élargir SORTABLE_ID_LEN");
     format!("{id:0SORTABLE_ID_LEN$x}")
 }
 
-/// Préfixe commun à tous les messages d'un salon, pour `getn`.
+/// Préfixe commun à tous les salons, pour `krange`.
+pub const CHANNEL_PREFIX: &str = "channel:";
+
+pub fn channel_key(id: u64) -> String {
+    let mut key = CHANNEL_PREFIX.to_string();
+    key.push_str(&sortable_id(id));
+    key
+}
+
+/// Préfixe commun à tous les messages d'un salon, pour `krange`.
 pub fn message_prefix(channel_id: u64) -> String {
     format!("message:{channel_id}:")
 }
@@ -52,5 +67,12 @@ mod tests {
     #[should_panic(expected = "au-delà de 2^36")]
     fn refuse_un_id_trop_grand() {
         sortable_id(MAX_SORTABLE_ID + 1);
+    }
+
+    #[test]
+    fn borne_des_ids_client() {
+        assert!(is_sortable(MAX_SORTABLE_ID));
+        assert!(!is_sortable(MAX_SORTABLE_ID + 1));
+        assert!(!is_sortable(u64::MAX));
     }
 }

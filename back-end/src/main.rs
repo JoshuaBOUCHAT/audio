@@ -16,6 +16,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use monoio::io::{AsyncReadRent, AsyncWriteRentExt, OwnedReadHalf, Splitable};
 use monoio::net::{TcpListener, TcpStream};
+use oxidart::krange::RangeVal;
 use oxidart::monoio::SharedArt;
 use oxidart::{OxidArt, Value};
 use prost::Message;
@@ -462,24 +463,26 @@ fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
 }
 
 /// Story 8 : tous les salons sont visibles par tout le monde, sauf les DM (stories
-/// 28-32), réservés à leurs deux participants. `getn` ne renvoie pas les clés triées
-/// (cf. `sync_messages`) : tri par id ici (quelques salons, coût négligeable).
+/// 28-32), réservés à leurs deux participants. Triés par id (clés `keys::channel_key`).
 fn list_channels(art: &OxidArt, user_id: u64) -> Vec<proto::Channel> {
-    let mut channels: Vec<proto::Channel> = art
-        .getn(SharedByte::from_str("channel:"))
-        .into_iter()
+    art.krange(keys::CHANNEL_PREFIX.as_bytes(), b"", usize::MAX, false)
+        .iter()
         .map(|(_, val)| {
-            bincode::deserialize::<proto::Channel>(
-                val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
-            )
-            .expect("channel:{id} corrompu")
+            bincode::deserialize::<proto::Channel>(range_bytes(val, "channel:{id}"))
+                .expect("channel:{id} corrompu")
         })
         .filter(|c| {
             c.r#type() != proto::channel::Type::Dm || c.participant_ids.contains(&user_id)
         })
-        .collect();
-    channels.sort_unstable_by_key(|c| c.id);
-    channels
+        .collect()
+}
+
+/// Valeur d'une entrée de `krange` : audio ne stocke que des `Value::String`.
+fn range_bytes<'a>(val: RangeVal<'a>, what: &str) -> &'a [u8] {
+    match val {
+        RangeVal::Bytes(b) => b.as_slice(),
+        RangeVal::Int(_) => panic!("{what} toujours Value::String"),
+    }
 }
 
 /// Story 7 : création de salon texte, admin uniquement (seule distinction de
@@ -526,7 +529,7 @@ fn create_channel(
     };
     let encoded = bincode::serialize(&channel).expect("sérialisation Channel");
     art.set(
-        SharedByte::from_str(&format!("channel:{id}")),
+        SharedByte::from_str(&keys::channel_key(id)),
         Value::String(SharedByte::from_slice(encoded)),
     );
     state.dirty.set(true);
@@ -544,12 +547,16 @@ fn require_auth(user_id: Option<u64>) -> Result<u64, proto::Error> {
 /// messages tant que leur livraison ciblée n'existe pas : le broadcast global les
 /// montrerait à tout le monde.
 fn check_text_channel(art: &mut OxidArt, channel_id: u64) -> Result<(), proto::Error> {
+    let unknown = || proto::Error {
+        code: 404,
+        message: "salon inconnu".to_string(),
+    };
+    if !keys::is_sortable(channel_id) {
+        return Err(unknown());
+    }
     let channel_bytes = art
-        .get(format!("channel:{channel_id}").as_bytes())
-        .ok_or_else(|| proto::Error {
-            code: 404,
-            message: "salon inconnu".to_string(),
-        })?;
+        .get(keys::channel_key(channel_id).as_bytes())
+        .ok_or_else(unknown)?;
     let channel: proto::Channel = bincode::deserialize(
         channel_bytes.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
     )
@@ -608,10 +615,8 @@ fn send_message(
 }
 
 /// Stories 12 et 15 : messages d'id > `last_seen_id`, tombstones compris, triés par
-/// id. Le tri est nécessaire : `getn` renvoie les clés dans l'ordre d'insertion des
-/// enfants de l'ART (non triés dans oxidart), et un reload du dump change cet ordre.
-/// En v1 le client envoie 0 à la reconnexion et reçoit tout le salon (cf.
-/// user-stories.md, story 15).
+/// id (`krange` strictement après la clé de `last_seen_id`). En v1 le client envoie 0
+/// à la reconnexion et reçoit tout le salon (cf. user-stories.md, story 15).
 fn sync_messages(
     req: proto::SyncRequest,
     state: &AppState,
@@ -620,13 +625,19 @@ fn sync_messages(
     require_auth(user_id)?;
     let mut art = state.art.borrow_mut();
     check_text_channel(&mut art, req.channel_id)?;
-    let mut messages: Vec<proto::Message> = art
-        .getn(SharedByte::from_str(&keys::message_prefix(req.channel_id)))
-        .iter()
-        .map(|(_, val)| decode_message(val))
-        .filter(|m| m.id > req.last_seen_id)
-        .collect();
-    messages.sort_unstable_by_key(|m| m.id);
+    // Au-delà de la borne des clés, aucun message ne peut suivre `last_seen_id`.
+    let messages = if keys::is_sortable(req.last_seen_id) {
+        let prefix = keys::message_prefix(req.channel_id);
+        let from = keys::message_key(req.channel_id, req.last_seen_id);
+        art.krange(prefix.as_bytes(), from.as_bytes(), usize::MAX, false)
+            .iter()
+            .map(|(_, val)| {
+                bincode::deserialize(range_bytes(val, "message")).expect("message corrompu")
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(proto::SyncResponse {
         channel_id: req.channel_id,
         messages,
@@ -646,14 +657,18 @@ fn delete_message(
     let mut art = state.art.borrow_mut();
     check_text_channel(&mut art, req.channel_id)?;
 
+    let unknown = || proto::Error {
+        code: 404,
+        message: "message inconnu".to_string(),
+    };
+    if !keys::is_sortable(req.message_id) {
+        return Err(unknown());
+    }
     let key = keys::message_key(req.channel_id, req.message_id);
     let mut message = art
         .get(key.as_bytes())
         .map(|val| decode_message(&val))
-        .ok_or_else(|| proto::Error {
-            code: 404,
-            message: "message inconnu".to_string(),
-        })?;
+        .ok_or_else(unknown)?;
     if message.user_id != user_id && !load_user(&mut art, user_id).is_admin {
         return Err(proto::Error {
             code: 403,

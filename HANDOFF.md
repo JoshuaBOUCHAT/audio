@@ -17,7 +17,7 @@ vrai serveur, redémarrage compris).
 | Messages | `send_message`, `sync_messages`, `delete_message` | salon texte uniquement (DM refusés : pas encore de livraison ciblée) ; tombstones (`deleted`, contenu vidé) ; suppression par l'auteur ou l'admin (403) |
 | Broadcast | `registry.rs` | modèle proactif repris du `SubRegistry` de radixox ; aux connexions authentifiées sauf l'émetteur, qui reçoit sa réponse avec `request_id` |
 | Persistance | `persist.rs` | reload de `data/dump.rxd` au démarrage ; `SAVE` toutes les 10 s si `dirty` ; `SAVE` sur Ctrl-C/SIGTERM (second signal : sortie sans save) |
-| Clés message | `keys.rs` | `message:{ch}:{id}`, id en hex sur 9 caractères |
+| Clés salon / message | `keys.rs` | `channel:{id}`, `message:{ch}:{id}`, id en hex sur 9 caractères ; listes triées par `krange` d'oxidart, ids client hors borne → 404 / sync vide |
 | Front debug | `front/src/debug/AuthDebug.tsx` | `/debug`, zéro CSS, toutes les requêtes + broadcasts reçus |
 
 Codes d'erreur utilisés : 400 (entrée invalide), 401 (non authentifié / token
@@ -42,8 +42,9 @@ Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique
   (le fsync fige le serveur pendant l'écriture, négligeable à cette échelle).
 - Story 15 : le client resync depuis `last_seen_id = 0` à la reconnexion (la
   suppression d'un message d'id ≤ `last_seen_id` n'est pas renvoyée autrement).
-- Clés message en hex à longueur fixe, pour un futur `getn` ordonné côté oxidart ;
-  d'ici là, `getn` renvoie l'ordre d'insertion → tri par id côté audio.
+- Clés en hex à longueur fixe (ordre des octets = ordre numérique) ; le 2026-10-12,
+  `krange` d'oxidart remplace `getn` + tri par id, et `channel:{id}` passe au même
+  encodage (un dump antérieur n'est plus relu correctement).
 - Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
 - Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
 

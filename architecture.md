@@ -129,7 +129,9 @@ par une relecture attentive d'un bloc `unsafe`.
 ### Modèle de données — clés OxidArt
 
 Pas de schéma relationnel : chaque type d'entité est une clé préfixée. Les scans de
-liste utilisent `getn(prefix)` (traversal ART natif, O(k)).
+liste utilisent `krange(prefix, from, count, rev)` d'oxidart : entrées en ordre
+lexicographique des clés, strictement après (ou avant) un curseur `from`, parcours
+borné au nombre d'entrées demandées.
 
 | Clé | Valeur | Notes |
 |---|---|---|
@@ -137,8 +139,8 @@ liste utilisent `getn(prefix)` (traversal ART natif, O(k)).
 | `email_index:{email}` | `user_id` (u64) | résout un email vers un compte existant |
 | `magiclink:{token}` | `email` (string) | **TTL courte** via `set_ttl` — expire seule, zéro code de nettoyage |
 | `session:{token}` | `user_id` (u64) | pas de TTL en v1 — révocation = `del` explicite (non implémenté v1) |
-| `channel:{id}` | `Channel` (bincode) | listing via `getn("channel:")` |
-| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **hexadécimal sur 9 caractères** (cf. `back-end/src/keys.rs`, clés OxidArt ASCII, base 16 pour un futur parcours ordonné côté oxidart). Aujourd'hui `getn` renvoie les clés dans l'ordre d'insertion des enfants (non triés) : la sync trie par id — indispensable pour que `getn("message:{channel_id}:")` retourne les messages triés sans tri applicatif |
+| `channel:{id}` | `Channel` (bincode) | `id` en hexadécimal sur 9 caractères comme les messages ; listing trié via `krange("channel:")` |
+| `message:{channel_id}:{id}` | `Message` (bincode) | `id` encodé en **hexadécimal sur 9 caractères** (cf. `back-end/src/keys.rs`, clés OxidArt ASCII) : ordre des octets = ordre numérique, donc `krange("message:{channel_id}:")` rend les messages triés par id sans tri applicatif |
 | `global_id_counter` | `u64` | un seul compteur partagé user/channel/message (cf. section IDs plus bas) ; clé OxidArt (`id_counter`, `incr`), persisté par le snapshot comme le reste |
 
 ### Flows
@@ -174,7 +176,7 @@ Serveur --NewMessage{message}--> TOUS les clients connectés (broadcast global,
 **Sync après reconnexion (story 12, 15)**
 ```
 Client --SyncRequest{channel_id, last_seen_id}--> Serveur
-Serveur: getn("message:{channel_id}:") -> filtre id > last_seen_id
+Serveur: krange("message:{channel_id}:", from = clé de last_seen_id) -> ids > last_seen_id
          (inclut les messages deleted=true)
 v1 : le client envoie last_seen_id = 0 à la reconnexion (resync complète) — seul
 moyen de voir les suppressions de messages d'id ≤ last_seen_id (cf. story 15)
