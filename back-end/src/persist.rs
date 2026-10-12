@@ -29,7 +29,7 @@ const STEP_BUDGET: u32 = 1 << 16;
 const SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// `AUDIO_DATA_DIR`, défaut `./data` (architecture.md § Déploiement).
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("AUDIO_DATA_DIR").unwrap_or_else(|_| "data".into()))
 }
 

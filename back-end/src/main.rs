@@ -1,5 +1,7 @@
 mod email;
+mod http;
 mod keys;
+mod media;
 mod persist;
 mod presence;
 mod proto;
@@ -16,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aws_lc_rs::digest::{digest, SHA1_FOR_LEGACY_USE_ONLY};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use monoio::io::{AsyncReadRent, AsyncWriteRentExt, OwnedReadHalf, Splitable};
+use monoio::io::{AsyncReadRent, OwnedReadHalf, Splitable};
 use monoio::net::{TcpListener, TcpStream};
 use oxidart::krange::RangeVal;
 use oxidart::monoio::SharedArt;
@@ -50,6 +52,7 @@ struct AppState {
     /// (oxidart ne compte pas les modifications).
     dirty: Rc<Cell<bool>>,
     presence: SharedPresence,
+    media: Rc<media::MediaConfig>,
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -106,6 +109,7 @@ async fn main() {
         registry: SharedRegistry::default(),
         dirty,
         presence: Rc::new(RefCell::new(Presence::from_env())),
+        media: Rc::new(media::MediaConfig::from_env(&persist::data_dir())),
     };
 
     if cfg!(debug_assertions) {
@@ -134,82 +138,14 @@ async fn main() {
 }
 
 async fn handle_conn(stream: TcpStream, acceptor: monoio_rustls::TlsAcceptor, state: AppState) {
-    let mut tls = match acceptor.accept(stream).await {
+    let tls = match acceptor.accept(stream).await {
         Ok(tls) => tls,
         Err(e) => {
             eprintln!("handshake TLS échoué: {e:?}");
             return;
         }
     };
-
-    let Some(ws_key) = read_ws_upgrade_request(&mut tls).await else {
-        return;
-    };
-
-    let Some(key) = ws_key else {
-        let _ = serve_index(&mut tls).await;
-        return;
-    };
-
-    if handle_ws_upgrade(&mut tls, &key).await.is_err() {
-        return;
-    }
-    println!("[ws] upgrade OK");
-
-    handle_ws_connection(tls, state).await;
-}
-
-// Un seul read : suffisant pour une requête GET tenant dans un segment TCP (pas de
-// gestion de requête fragmentée sur plusieurs complétions io_uring ici, cf.
-// architecture.md § HTTP/1.1 pour la vraie implémentation).
-// Retourne `None` si la lecture/parse échoue, `Some(None)` si la requête n'est pas
-// une upgrade WebSocket, `Some(Some(key))` sinon.
-async fn read_ws_upgrade_request(
-    tls: &mut monoio_rustls::ServerTlsStream<TcpStream>,
-) -> Option<Option<String>> {
-    let buf = vec![0u8; 4096];
-    let (res, buf) = tls.read(buf).await;
-    let n = match res {
-        Ok(0) | Err(_) => return None,
-        Ok(n) => n,
-    };
-
-    // 64 : un navigateur envoie bien plus que 16 en-têtes (Origin, Sec-Fetch-*,
-    // Accept-Language, Cookie…) — au-delà, httparse renvoie TooManyHeaders.
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut req = httparse::Request::new(&mut headers);
-    if let Err(e) = req.parse(&buf[..n]) {
-        eprintln!("[http] requête illisible: {e:?}");
-        return None;
-    }
-    Some(
-        req.headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("sec-websocket-key"))
-            .map(|h| String::from_utf8_lossy(h.value).into_owned()),
-    )
-}
-
-async fn serve_index(tls: &mut monoio_rustls::ServerTlsStream<TcpStream>) -> std::io::Result<()> {
-    let body = INDEX_HTML.as_bytes();
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let mut resp = header.into_bytes();
-    resp.extend_from_slice(body);
-    tls.write_all(resp).await.0.map(|_| ())
-}
-
-async fn handle_ws_upgrade(
-    tls: &mut monoio_rustls::ServerTlsStream<TcpStream>,
-    key: &str,
-) -> std::io::Result<()> {
-    let accept = compute_accept(key);
-    let response = format!(
-        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
-    );
-    tls.write_all(response.into_bytes()).await.0.map(|_| ())
+    http::serve(tls, state).await;
 }
 
 // Boucle de lecture : une frame binaire entrante = un ClientEnvelope protobuf. Le flux
@@ -219,10 +155,11 @@ async fn handle_ws_upgrade(
 // Story 33 : l'auth se fait une fois par connexion WebSocket (AuthRequest), puis
 // l'identité est portée par `user_id` en mémoire pour toute la durée de vie de cette
 // connexion — aucune requête suivante n'a besoin de reporter un token.
-async fn handle_ws_connection(tls: TlsStream, state: AppState) {
+/// `pending` : octets déjà lus après la requête d'upgrade (début de frame éventuel).
+async fn handle_ws_connection(tls: TlsStream, state: AppState, pending: Vec<u8>) {
     let (read, write) = tls.into_split();
     let conn = state.registry.borrow_mut().insert(write);
-    read_loop(read, conn, &state).await;
+    read_loop(read, conn, &state, pending).await;
     state.registry.borrow_mut().remove(conn);
     presence::disconnected(&state.presence, &state.registry, conn);
     println!("[ws] connexion terminée");
@@ -231,9 +168,13 @@ async fn handle_ws_connection(tls: TlsStream, state: AppState) {
 /// Les octets lus s'accumulent dans `pending` jusqu'à former des frames complètes :
 /// une lecture peut porter une demi-frame (photo de profil de plusieurs records TLS)
 /// comme plusieurs frames. Une frame invalide ferme la connexion.
-async fn read_loop(mut read: OwnedReadHalf<TlsStream>, conn: ConnId, state: &AppState) {
+async fn read_loop(
+    mut read: OwnedReadHalf<TlsStream>,
+    conn: ConnId,
+    state: &AppState,
+    mut pending: Vec<u8>,
+) {
     let mut chunk = vec![0u8; 16 * 1024];
-    let mut pending: Vec<u8> = Vec::new();
     let mut user_id: Option<u64> = None;
     loop {
         loop {
@@ -421,6 +362,23 @@ fn handle_client_envelope(
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::DeleteMedia(req)) => {
+            let deleted = require_auth(*user_id).and_then(|me| {
+                media::delete(&mut state.art.borrow_mut(), &state.media, &req.media_id, me)
+            });
+            match deleted {
+                Ok(()) => {
+                    state.dirty.set(true);
+                    let deleted = proto::server_envelope::Payload::MediaDeleted(proto::MediaDeleted {
+                        media_id: req.media_id,
+                    });
+                    // Story 50 : partout où le lien apparaît, « image supprimée ».
+                    registry::broadcast(&state.registry, conn, &event(deleted.clone()));
+                    deleted
+                }
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
         Some(Payload::SetBio(req)) => match set_bio(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -599,15 +557,7 @@ fn handle_auth(
         state.dirty.set(true);
         (user, session_token)
     } else {
-        let session_key = format!("session:{token}");
-        let id_val = art.get(session_key.as_bytes()).ok_or_else(invalid_token)?;
-        let id: u64 = id_val
-            .as_bytes()
-            .expect("session:{token} toujours Value::String")
-            .as_str()
-            .expect("id toujours ASCII")
-            .parse()
-            .expect("session id toujours numérique");
+        let id = session_user(&mut art, token).ok_or_else(invalid_token)?;
         (load_user(&mut art, id), token) // token de session déjà valide : pas de rotation, renvoyé tel quel
     };
 
@@ -623,6 +573,21 @@ fn handle_auth(
         online_user_ids: Vec::new(), // rempli par l'appelant, après `presence::connected`
         dms,
     })
+}
+
+/// Utilisateur d'un token de session (story 33) : WebSocket (`AuthRequest`) et HTTP
+/// (`Authorization: Bearer`, images).
+fn session_user(art: &mut OxidArt, token: Uuid) -> Option<u64> {
+    let id_val = art.get(format!("session:{token}").as_bytes())?;
+    Some(
+        id_val
+            .as_bytes()
+            .expect("session:{token} toujours Value::String")
+            .as_str()
+            .expect("id toujours ASCII")
+            .parse()
+            .expect("session id toujours numérique"),
+    )
 }
 
 fn save_user(art: &mut OxidArt, user: &proto::User) {

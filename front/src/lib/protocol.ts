@@ -53,6 +53,11 @@ export function setStatus(status: chat.Status): ClientEnvelopeShape {
   return { payload: "setStatus", setStatus: { status } };
 }
 
+/** Story 50 : supprimer une image pour tout le monde (celui qui l'a envoyée). */
+export function deleteMedia(mediaId: string): ClientEnvelopeShape {
+  return { payload: "deleteMedia", deleteMedia: { mediaId } };
+}
+
 /** Story 43 : vide = retirer la description. */
 export function setBio(bio: string): ClientEnvelopeShape {
   return { payload: "setBio", setBio: { bio } };
