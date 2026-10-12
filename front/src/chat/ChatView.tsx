@@ -2,11 +2,12 @@
 // sélectionné (`ChannelFeed`).
 
 import { useEffect, useState } from "react"
-import { Hash, LogOut, Plus } from "lucide-react"
+import { Hash, LogOut, Plus, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { Avatar } from "./Avatar"
+import { PresenceAvatar } from "./Avatar"
+import { MembersPanel } from "./MembersPanel"
 import { ChannelFeed } from "./ChannelFeed"
 import { ProfilePanel } from "./ProfilePanel"
 import type { ChatState, ChatStore } from "./store"
@@ -14,6 +15,7 @@ import type { ChatState, ChatStore } from "./store"
 export function ChatView({ state, store }: { state: ChatState; store: ChatStore }) {
   const [selected, setSelected] = useState<number | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [membersOpen, setMembersOpen] = useState(true)
   const me = state.me!
   // Salon affiché : le choix de l'utilisateur s'il existe encore, sinon le premier.
   const channelId = state.channels.some((c) => c.id === selected)
@@ -60,7 +62,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
             className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted"
             title="Modifier le profil"
           >
-            <Avatar userId={me.id} state={state} store={store} className="size-8" />
+            <PresenceAvatar userId={me.id} state={state} store={store} className="size-8" />
             <span className="min-w-0 truncate text-sm font-medium">
               {me.pseudo}
               {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
@@ -80,9 +82,18 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
               <span className="font-semibold">{channel.name}</span>
             </>
           )}
-          {state.phase === "offline" && (
-            <span className="ml-auto text-sm text-muted-foreground">Reconnexion…</span>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            {state.phase === "offline" && <span className="text-sm text-muted-foreground">Reconnexion…</span>}
+            <Button
+              variant={membersOpen ? "secondary" : "ghost"}
+              size="icon-sm"
+              className="hidden lg:inline-flex"
+              onClick={() => setMembersOpen((open) => !open)}
+              title={membersOpen ? "Masquer les membres" : "Afficher les membres"}
+            >
+              <Users />
+            </Button>
+          </div>
         </header>
 
         {state.error && (
@@ -102,6 +113,12 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
           </div>
         )}
       </main>
+
+      {membersOpen && (
+        <div className="hidden lg:flex">
+          <MembersPanel state={state} store={store} />
+        </div>
+      )}
 
       {profileOpen && <ProfilePanel state={state} store={store} onClose={() => setProfileOpen(false)} />}
     </div>

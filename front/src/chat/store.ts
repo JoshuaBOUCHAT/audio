@@ -18,6 +18,7 @@ import {
   sendMessage,
   setAvatar,
   setPseudo,
+  setStatus,
   syncRequest,
   type ClientEnvelopeShape,
   type ServerEnvelope,
@@ -35,6 +36,7 @@ import {
   type Me,
   type Profile,
 } from "./model"
+import { chat } from "@/proto/messages.js"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
 
 export type Phase =
@@ -51,6 +53,8 @@ export type ChatState = {
   channels: ChatChannel[]
   /** Profils publics par id (story 36), `me` compris. */
   users: Record<number, Profile>
+  /** Story 23 : ids vus en ligne par les autres (délais et invisibles appliqués par le serveur). */
+  online: ReadonlySet<number>
   /** Photos chargées : object URL de la version connue (story 36). */
   avatars: Record<number, { version: number; url: string }>
   /** Messages par salon ; absent = salon jamais synchronisé. */
@@ -66,6 +70,7 @@ const INITIAL: ChatState = {
   me: null,
   channels: [],
   users: {},
+  online: new Set(),
   avatars: {},
   messages: {},
   error: null,
@@ -73,6 +78,12 @@ const INITIAL: ChatState = {
 }
 
 const RECONNECT_MAX_MS = 10_000
+
+/** Story 23 : vu par les autres. Pour soi, on suit son propre choix (story 41). */
+export function isShownOnline(state: ChatState, userId: number): boolean {
+  if (userId === state.me?.id) return !state.me.invisible
+  return state.online.has(userId)
+}
 
 export class ChatStore {
   private state: ChatState = INITIAL
@@ -230,6 +241,7 @@ export class ChatStore {
       me,
       users,
       channels,
+      online: new Set((auth.onlineUserIds ?? []).map(toNumber)),
       messages: kept,
       avatars: {},
       linkSent: false,
@@ -304,6 +316,15 @@ export class ChatStore {
     return true
   }
 
+  /** Story 41 : appliqué tout de suite côté serveur (pas de délai, story 42). */
+  setInvisible = async (invisible: boolean): Promise<void> => {
+    const response = await this.request(setStatus(invisible ? chat.Status.INVISIBLE : chat.Status.ONLINE))
+    const me = this.state.me
+    if (response?.statusSet && me) {
+      this.set({ me: { ...me, invisible: response.statusSet.status === chat.Status.INVISIBLE } })
+    }
+  }
+
   /** Story 37 : image déjà réduite (cf. avatar-image.ts) ; vide = retirer la photo. */
   setAvatar = async (image: Uint8Array): Promise<boolean> => {
     this.set({ error: null })
@@ -372,6 +393,15 @@ export class ChatStore {
       case "messageDeleted": {
         const d = envelope.messageDeleted
         if (d) this.markDeleted(toNumber(d.channelId), toNumber(d.messageId))
+        break
+      }
+      case "presenceChanged": {
+        const change = envelope.presenceChanged
+        if (!change) break
+        const online = new Set(this.state.online)
+        if (change.online) online.add(toNumber(change.userId))
+        else online.delete(toNumber(change.userId))
+        this.set({ online })
         break
       }
       case "userUpdated": {

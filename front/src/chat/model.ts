@@ -5,7 +5,15 @@
 import type Long from "long"
 import { chat } from "@/proto/messages.js"
 
-export type Me = { id: number; email: string; isAdmin: boolean; pseudo: string; avatarVersion: number }
+export type Me = {
+  id: number
+  email: string
+  isAdmin: boolean
+  pseudo: string
+  avatarVersion: number
+  /** Story 41 : statut choisi, mémorisé avec le compte. */
+  invisible: boolean
+}
 /** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
 export type Profile = { id: number; pseudo: string; avatarVersion: number }
 export type ChatChannel = { id: number; name: string }
@@ -34,6 +42,7 @@ export function toMe(user: chat.IUser | null | undefined): Me {
     isAdmin: user?.isAdmin ?? false,
     pseudo: user?.pseudo ?? "",
     avatarVersion: toNumber(user?.avatarVersion),
+    invisible: user?.status === chat.Status.INVISIBLE,
   }
 }
 

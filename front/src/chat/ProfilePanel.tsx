@@ -5,6 +5,7 @@ import { X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
 import { toAvatarBytes } from "./avatar-image"
 import type { ChatState, ChatStore } from "./store"
@@ -79,6 +80,32 @@ export function ProfilePanel({
                 }}
               />
             </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">Statut</span>
+            <div className="grid grid-cols-2 gap-2">
+              {([false, true] as const).map((invisible) => (
+                <Button
+                  key={String(invisible)}
+                  type="button"
+                  variant={me.invisible === invisible ? "secondary" : "ghost"}
+                  className={cn("justify-start", me.invisible === invisible && "ring-1 ring-border")}
+                  onClick={() => void store.setInvisible(invisible)}
+                  aria-pressed={me.invisible === invisible}
+                >
+                  <span
+                    className={cn("size-2.5 rounded-full", invisible ? "bg-muted-foreground/50" : "bg-emerald-500")}
+                  />
+                  {invisible ? "Invisible" : "En ligne"}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {me.invisible
+                ? "Les autres te voient hors ligne, mais tu peux tout faire normalement."
+                : "Les autres te voient en ligne 15 s après ta connexion."}
+            </p>
           </div>
 
           <form
