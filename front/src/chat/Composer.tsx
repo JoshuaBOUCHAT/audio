@@ -1,7 +1,8 @@
-// Barre de saisie riche (stories 27, 45) : texte et images librement mélangés, dans
-// l'ordre où on les place. Une image est une miniature insérée au curseur (bouton,
-// Ctrl+V, glisser-déposer, ou lien `/media/…` collé, story 46) ; le contenu se lit
-// comme le texte du message, chaque image y devenant son lien.
+// Barre de saisie riche (stories 27, 45, 51-52) : texte, images, fichiers et dossiers
+// librement mélangés, dans l'ordre où on les place. Chacun est une miniature insérée
+// au curseur (bouton, Ctrl+V, glisser-déposer, ou lien `/media/…` collé, story 46) —
+// une image en vignette, un fichier ou un dossier en carte ; le contenu se lit comme
+// le texte du message, chaque média y devenant son lien.
 //
 // `contenteditable` piloté à la main (non contrôlé par React) : React ne touche jamais
 // à son DOM, les miniatures y sont posées par les fonctions ci-dessous. Entrée envoie,
@@ -9,8 +10,10 @@
 
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react"
 import { cn } from "@/lib/utils"
-import { mediaToken, splitContent } from "./media"
+import { formatBytes, mediaToken, splitContent } from "./media"
+import type { MediaInfo } from "./model"
 import type { ChatState, ChatStore } from "./store"
+import { folderSize, readDropped, zipFolder, type Folder } from "./zip-folder"
 
 export type ComposerHandle = {
   /** Contenu du message : texte, images remplacées par leur lien. */
@@ -18,7 +21,8 @@ export type ComposerHandle = {
   setValue(content: string): void
   focus(): void
   insertFiles(files: File[]): void
-  /** Une image est encore en cours d'envoi : le message ne peut pas partir. */
+  insertFolders(folders: Folder[]): void
+  /** Un média est encore en cours d'envoi : le message ne peut pas partir. */
   isUploading(): boolean
 }
 
@@ -68,16 +72,16 @@ export function Composer({
     return () => document.removeEventListener("selectionchange", onSelection)
   }, [])
 
-  // Les miniatures d'images déjà envoyées (édition, lien collé) suivent le cache.
+  // Les miniatures des médias envoyés (édition, lien collé, envoi terminé) suivent le
+  // cache : vignette pour une image, carte pour un fichier.
   useEffect(() => {
     const el = editor.current
     if (!el) return
     for (const chip of el.querySelectorAll<HTMLElement>("[data-media-id]")) {
-      const id = chip.dataset.mediaId!
-      const entry = state.media[id]
-      const img = chip.querySelector("img")!
-      if (!entry) store.ensureMedia(id)
-      else if (entry.status === "ready" && !img.src) img.src = entry.url
+      const entry = state.media[chip.dataset.mediaId!]
+      if (!entry) store.ensureMedia(chip.dataset.mediaId!)
+      else if (entry.status === "missing") renderFile(chip, { name: "fichier supprimé", detail: "", folder: false })
+      else if (entry.status === "ready") renderInfo(chip, entry.info, entry.url)
       chip.classList.toggle("opacity-40", entry?.status === "missing")
     }
   })
@@ -109,34 +113,71 @@ export function Composer({
   /** Texte collé : les liens d'images deviennent des miniatures (story 46). */
   function insertContent(content: string) {
     for (const part of splitContent(content)) {
-      insertNode(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id, null))
+      insertNode(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id))
     }
     refresh()
   }
 
+  /** Envoi d'un média : la miniature affiche la progression, puis devient son lien. */
+  function upload(
+    chip: HTMLElement,
+    blob: Blob,
+    options: { name: string; folder?: { files: number; size: number } },
+    progress: (ratio: number) => void,
+  ) {
+    void store.uploadMedia(blob, { ...options, onProgress: progress }).then((info) => {
+      if (info) {
+        chip.dataset.mediaId = info.id
+        delete chip.dataset.uploading
+      } else {
+        chip.remove()
+      }
+      setUploading((n) => n - 1)
+      refresh()
+    })
+  }
+
   function insertFiles(files: File[]) {
-    const images = files.filter((f) => f.type.startsWith("image/"))
-    if (images.length === 0) {
-      if (files.length > 0) store.flash("Seules les images sont acceptées")
-      return
-    }
+    if (files.length === 0) return
     editor.current?.focus()
-    for (const file of images) {
-      // Aperçu local immédiat, le lien remplace la miniature en attente une fois envoyée.
-      const chip = createChip(null, URL.createObjectURL(file))
+    for (const file of files) {
+      const chip = createChip(null)
+      if (file.type.startsWith("image/")) renderImage(chip, URL.createObjectURL(file), true)
+      else renderFile(chip, { name: file.name, detail: "Envoi…", folder: false })
       insertNode(chip)
       setUploading((n) => n + 1)
-      void store.uploadMedia(file).then((id) => {
-        if (id) {
-          chip.dataset.mediaId = id
-          delete chip.dataset.uploading
-          chip.querySelector("[data-spinner]")?.remove()
-        } else {
-          chip.remove()
-        }
-        setUploading((n) => n - 1)
-        refresh()
+      upload(chip, file, { name: file.name || "fichier" }, (ratio) => {
+        if (!file.type.startsWith("image/")) setDetail(chip, `Envoi ${percent(ratio)}`)
       })
+    }
+    refresh()
+  }
+
+  /** Story 52 : chaque dossier est compressé en ZIP puis envoyé comme un fichier. */
+  function insertFolders(folders: Folder[]) {
+    if (folders.length === 0) return
+    editor.current?.focus()
+    for (const folder of folders) {
+      const chip = createChip(null)
+      renderFile(chip, { name: `${folder.name}.zip`, detail: "Compression…", folder: true })
+      insertNode(chip)
+      setUploading((n) => n + 1)
+      const size = folderSize(folder)
+      zipFolder(folder, (ratio) => setDetail(chip, `Compression ${percent(ratio)}`))
+        .then((zip) =>
+          upload(
+            chip,
+            zip,
+            { name: `${folder.name}.zip`, folder: { files: folder.entries.length, size } },
+            (ratio) => setDetail(chip, `Envoi ${percent(ratio)} de ${formatBytes(zip.size)}`),
+          ),
+        )
+        .catch(() => {
+          store.flash(`Compression de « ${folder.name} » impossible`)
+          chip.remove()
+          setUploading((n) => n - 1)
+          refresh()
+        })
     }
     refresh()
   }
@@ -148,7 +189,7 @@ export function Composer({
       if (!el) return
       el.replaceChildren()
       for (const part of splitContent(content)) {
-        el.append(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id, null))
+        el.append(part.kind === "text" ? document.createTextNode(part.text) : createChip(part.id))
       }
       refresh()
       placeCaretAtEnd(el)
@@ -160,6 +201,7 @@ export function Composer({
       placeCaretAtEnd(el)
     },
     insertFiles,
+    insertFolders,
     isUploading: () => uploading > 0,
   }))
 
@@ -204,16 +246,23 @@ export function Composer({
           if (e.dataTransfer.types.includes("Files")) e.preventDefault()
         }}
         onDrop={(e) => {
-          const files = [...e.dataTransfer.files]
-          if (files.length === 0) return
+          if (e.dataTransfer.files.length === 0) return
           e.preventDefault()
           const range = document.caretRangeFromPoint?.(e.clientX, e.clientY)
           if (range) {
             const selection = window.getSelection()!
             selection.removeAllRanges()
             selection.addRange(range)
+            savedRange.current = range.cloneRange()
           }
-          insertFiles(files)
+          // Synchrone : les entrées ne sont plus lisibles après le premier `await`.
+          const entries = [...e.dataTransfer.items]
+            .map((item) => item.webkitGetAsEntry())
+            .filter((entry): entry is FileSystemEntry => entry !== null)
+          void readDropped(entries).then(({ files, folders }) => {
+            insertFiles(files)
+            insertFolders(folders)
+          })
         }}
         onClick={(e) => {
           // Croix d'une miniature : retire l'image du message en cours.
@@ -233,34 +282,92 @@ export function Composer({
   )
 }
 
-/** Miniature d'image dans l'éditeur : un bloc non éditable, effacé d'un coup. */
-function createChip(id: string | null, preview: string | null): HTMLSpanElement {
+/**
+ * Miniature de média dans l'éditeur : un bloc non éditable, effacé d'un coup, avec une
+ * croix pour le retirer. Son contenu (vignette ou carte) est posé par `render*`.
+ * Tout texte venant de l'utilisateur (nom de fichier) passe par `textContent`.
+ */
+function createChip(id: string | null): HTMLSpanElement {
   const chip = document.createElement("span")
   chip.contentEditable = "false"
-  chip.className = "relative mx-0.5 inline-block align-bottom transition-opacity"
+  chip.className = "relative mx-0.5 my-0.5 inline-block align-bottom transition-opacity"
   if (id) chip.dataset.mediaId = id
   else chip.dataset.uploading = "1"
-  const img = document.createElement("img")
-  img.className = "h-16 w-16 rounded-md border bg-muted object-cover"
-  img.alt = ""
-  if (preview) img.src = preview
-  chip.append(img)
-  if (!id) {
-    const spinner = document.createElement("span")
-    spinner.dataset.spinner = "1"
-    spinner.className =
-      "absolute inset-0 m-auto size-6 animate-spin rounded-full border-2 border-white border-t-transparent"
-    chip.append(spinner)
-  }
+  const body = document.createElement("span")
+  body.dataset.body = "1"
+  chip.append(body)
   const remove = document.createElement("button")
   remove.type = "button"
   remove.dataset.remove = "1"
-  remove.title = "Retirer l'image"
+  remove.title = "Retirer"
   remove.textContent = "×"
   remove.className =
     "absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-xs leading-none text-background"
   chip.append(remove)
+  if (id === null) body.dataset.view = ""
   return chip
+}
+
+function renderInfo(chip: HTMLElement, info: MediaInfo, url: string | undefined) {
+  if (info.isImage) renderImage(chip, url ?? "", false)
+  else {
+    const detail = info.folderFiles
+      ? `${info.folderFiles} fichiers · ${formatBytes(info.folderSize)}`
+      : formatBytes(info.size)
+    renderFile(chip, { name: info.name, detail, folder: info.folderFiles > 0 })
+  }
+}
+
+function renderImage(chip: HTMLElement, url: string, uploading: boolean) {
+  const body = chip.querySelector<HTMLElement>("[data-body]")!
+  const view = `image:${url}:${uploading}`
+  if (body.dataset.view === view) return
+  body.dataset.view = view
+  const img = document.createElement("img")
+  img.className = "h-16 w-16 rounded-md border bg-muted object-cover"
+  img.alt = ""
+  if (url) img.src = url
+  body.replaceChildren(img)
+  if (uploading) {
+    const spinner = document.createElement("span")
+    spinner.className =
+      "absolute inset-0 m-auto size-6 animate-spin rounded-full border-2 border-white border-t-transparent"
+    body.append(spinner)
+  }
+}
+
+function renderFile(chip: HTMLElement, file: { name: string; detail: string; folder: boolean }) {
+  const body = chip.querySelector<HTMLElement>("[data-body]")!
+  const view = `file:${file.name}:${file.detail}:${file.folder}`
+  if (body.dataset.view === view) return
+  body.dataset.view = view
+  const card = document.createElement("span")
+  card.className = "inline-flex max-w-64 items-center gap-2 rounded-md border bg-muted px-2.5 py-1.5 text-xs"
+  const icon = document.createElement("span")
+  icon.className = "text-lg leading-none"
+  icon.textContent = file.folder ? "🗂️" : "📄"
+  const text = document.createElement("span")
+  text.className = "min-w-0"
+  const name = document.createElement("span")
+  name.className = "block truncate font-medium"
+  name.textContent = file.name
+  const detail = document.createElement("span")
+  detail.dataset.detail = "1"
+  detail.className = "block text-muted-foreground"
+  detail.textContent = file.detail
+  text.append(name, detail)
+  card.append(icon, text)
+  body.replaceChildren(card)
+}
+
+/** Progression : mise à jour directe du texte, sans reconstruire la carte. */
+function setDetail(chip: HTMLElement, detail: string) {
+  const el = chip.querySelector<HTMLElement>("[data-detail]")
+  if (el) el.textContent = detail
+}
+
+function percent(ratio: number): string {
+  return `${Math.floor(ratio * 100)} %`
 }
 
 function serialize(root: HTMLElement): string {

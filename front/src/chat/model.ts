@@ -91,6 +91,38 @@ export function byLastActivity(a: Conversation, b: Conversation): number {
   return Math.max(b.lastMessageId, b.id) - Math.max(a.lastMessageId, a.id)
 }
 
+/** Stories 27, 51-52 : métadonnées d'un média, sans son contenu. */
+export type MediaInfo = {
+  id: string
+  ownerId: number
+  mime: string
+  name: string
+  size: number
+  width: number
+  height: number
+  /** Image propre (story 47), affichée dans le fil ; sinon un fichier à télécharger. */
+  isImage: boolean
+  /** Dossier compressé (story 52) : 0 sinon. */
+  folderFiles: number
+  folderSize: number
+}
+
+export function toMediaInfo(media: chat.IMedia): MediaInfo {
+  const mime = media.mime ?? ""
+  return {
+    id: media.id ?? "",
+    ownerId: toNumber(media.ownerId),
+    mime,
+    name: media.name ?? "",
+    size: toNumber(media.size),
+    width: media.width ?? 0,
+    height: media.height ?? 0,
+    isImage: mime.startsWith("image/"),
+    folderFiles: media.folderFiles ?? 0,
+    folderSize: toNumber(media.folderSize),
+  }
+}
+
 export function toMessage(message: chat.IMessage): ChatMessage {
   return {
     id: toNumber(message.id),

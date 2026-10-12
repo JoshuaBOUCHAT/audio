@@ -1,13 +1,14 @@
-// Corps d'un message (story 27) : texte et images dans l'ordre où ils ont été écrits.
-// Au survol d'une image : copier son lien (story 46), l'enregistrer en local (story 49),
-// la supprimer ici ou pour tout le monde (story 50) ; au clic, vue en grand (story 49).
+// Corps d'un message (stories 27, 51-52) : texte, images et fichiers dans l'ordre où ils
+// ont été écrits. Une image s'affiche (clic : vue en grand, story 49), un fichier ou un
+// dossier est une carte (nom, taille). Actions : copier le lien (story 46), télécharger
+// (ticket, story 53), supprimer ici ou pour tout le monde (story 50).
 
 import { useEffect, useState } from "react"
-import { Download, ImageOff, Link, Trash2, X } from "lucide-react"
+import { Download, File as FileIcon, FileX, FolderArchive, Link, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { fileName, shareLink, splitContent, withoutMedia } from "./media"
-import type { ChatMessage } from "./model"
+import { formatBytes, shareLink, splitContent, withoutMedia } from "./media"
+import type { ChatMessage, MediaInfo } from "./model"
 import type { ChatState, ChatStore, MediaEntry } from "./store"
 
 export function MessageBody({ message, state, store }: { message: ChatMessage; state: ChatState; store: ChatStore }) {
@@ -20,7 +21,7 @@ export function MessageBody({ message, state, store }: { message: ChatMessage; s
         part.kind === "text" ? (
           <span key={i}>{part.text}</span>
         ) : (
-          <MediaImage
+          <MediaPart
             key={i}
             id={part.id}
             state={state}
@@ -54,10 +55,10 @@ export function MessageBody({ message, state, store }: { message: ChatMessage; s
 }
 
 function isOwner(entry: MediaEntry | undefined, state: ChatState): boolean {
-  return entry?.status === "ready" && entry.ownerId === state.me?.id
+  return entry?.status === "ready" && entry.info.ownerId === state.me?.id
 }
 
-function MediaImage({
+function MediaPart({
   id,
   state,
   store,
@@ -80,46 +81,73 @@ function MediaImage({
   if (entry?.status === "missing") {
     return (
       <span className="my-1 inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground italic">
-        <ImageOff className="size-4" />
-        image supprimée
+        <FileX className="size-4" />
+        fichier supprimé
       </span>
     )
   }
-  if (entry?.status !== "ready") {
+  const actions = entry?.status === "ready" && (
+    <span className="hidden gap-0.5 rounded-md border bg-background/90 p-0.5 shadow-sm group-hover/media:flex">
+      <MediaActions info={entry.info} store={store} />
+      {canDelete && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="text-destructive hover:text-destructive"
+          onClick={onDelete}
+          title="Supprimer"
+        >
+          <Trash2 />
+        </Button>
+      )}
+    </span>
+  )
+  if (entry?.status === "ready" && !entry.info.isImage) {
+    return (
+      <span className="group/media relative my-1 inline-flex max-w-full items-center gap-3 rounded-lg border bg-muted/50 py-2 pr-2 pl-3 align-bottom whitespace-normal">
+        <FileCard info={entry.info} />
+        <Button variant="secondary" size="icon-sm" onClick={() => void store.download(id)} title="Télécharger">
+          <Download />
+        </Button>
+        <span className="absolute -top-3 right-1.5">{actions}</span>
+      </span>
+    )
+  }
+  if (entry?.status !== "ready" || !entry.url) {
     return <span className="my-1 inline-block h-32 w-48 animate-pulse rounded-lg bg-muted align-bottom" />
   }
   return (
-    <span className="group/image relative my-1 inline-block align-bottom">
+    <span className="group/media relative my-1 inline-block align-bottom">
       <button type="button" onClick={onOpen} className="block cursor-zoom-in" title="Voir en grand">
         <img src={entry.url} alt="" className="max-h-80 max-w-[min(100%,24rem)] rounded-lg border" />
       </button>
-      <span className="absolute top-1.5 right-1.5 hidden gap-0.5 rounded-md border bg-background/90 p-0.5 shadow-sm group-hover/image:flex">
-        <ImageActions id={id} entry={entry} store={store} />
-        {canDelete && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="text-destructive hover:text-destructive"
-            onClick={onDelete}
-            title="Supprimer l'image"
-          >
-            <Trash2 />
-          </Button>
-        )}
-      </span>
+      <span className="absolute top-1.5 right-1.5">{actions}</span>
     </span>
   )
 }
 
-function ImageActions({
-  id,
-  entry,
-  store,
-}: {
-  id: string
-  entry: Extract<MediaEntry, { status: "ready" }>
-  store: ChatStore
-}) {
+/** Story 52 : un dossier montre son nombre de fichiers et sa taille d'origine. */
+function FileCard({ info }: { info: MediaInfo }) {
+  const folder = info.folderFiles > 0
+  const Icon = folder ? FolderArchive : FileIcon
+  return (
+    <>
+      <Icon className="size-8 shrink-0 text-muted-foreground" />
+      <span className="min-w-0">
+        <span className="block max-w-72 truncate text-sm font-medium" title={info.name}>
+          {info.name}
+        </span>
+        <span className="block text-xs text-muted-foreground">
+          {folder
+            ? `Dossier · ${info.folderFiles} fichier${info.folderFiles > 1 ? "s" : ""} · ${formatBytes(info.folderSize)} (${formatBytes(info.size)} compressé)`
+            : formatBytes(info.size)}
+        </span>
+      </span>
+    </>
+  )
+}
+
+function MediaActions({ info, store }: { info: MediaInfo; store: ChatStore }) {
   return (
     <>
       <Button
@@ -127,23 +155,16 @@ function ImageActions({
         size="icon-xs"
         title="Copier le lien (ne s'ouvre que dans l'app)"
         onClick={() => {
-          void navigator.clipboard.writeText(shareLink(id)).then(() => store.flash("Lien de l'image copié"))
+          void navigator.clipboard.writeText(shareLink(info.id)).then(() => store.flash("Lien copié"))
         }}
       >
         <Link />
       </Button>
-      <Button variant="ghost" size="icon-xs" title="Enregistrer l'image" onClick={() => download(entry.url, fileName(id, entry.mime))}>
+      <Button variant="ghost" size="icon-xs" title="Télécharger" onClick={() => void store.download(info.id)}>
         <Download />
       </Button>
     </>
   )
-}
-
-function download(url: string, name: string) {
-  const a = document.createElement("a")
-  a.href = url
-  a.download = name
-  a.click()
 }
 
 /** Story 49 : image en grand, Échap ou clic à côté pour fermer. */
@@ -154,7 +175,7 @@ function Lightbox({ id, state, store, onClose }: { id: string; state: ChatState;
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
   }, [onClose])
-  if (entry?.status !== "ready") return null
+  if (entry?.status !== "ready" || !entry.url) return null
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-6 whitespace-normal"
@@ -165,7 +186,7 @@ function Lightbox({ id, state, store, onClose }: { id: string; state: ChatState;
     >
       <img src={entry.url} alt="" className="max-h-full max-w-full rounded-md object-contain shadow-2xl" />
       <div className="absolute top-4 right-4 flex gap-1 rounded-lg bg-background/90 p-1 shadow">
-        <ImageActions id={id} entry={entry} store={store} />
+        <MediaActions info={entry.info} store={store} />
         <Button variant="ghost" size="icon-xs" onClick={onClose} title="Fermer">
           <X />
         </Button>
@@ -212,14 +233,14 @@ function DeleteImage({
     >
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Supprimer cette image ?</CardTitle>
+          <CardTitle>Supprimer ce fichier ?</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
-          {canHere && <p>« Ici » la retire seulement de ce message.</p>}
+          {canHere && <p>« Ici » le retire seulement de ce message.</p>}
           {canEverywhere && (
             <p>
-              « Pour tout le monde » la supprime du serveur : partout où elle a été partagée, elle sera remplacée par
-              « image supprimée ». C'est définitif.
+              « Pour tout le monde » le supprime du serveur : partout où il a été partagé, il sera remplacé par
+              « fichier supprimé ». C'est définitif.
             </p>
           )}
         </CardContent>

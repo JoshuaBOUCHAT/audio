@@ -42,13 +42,15 @@ export function withoutMedia(content: string, id: string): string {
     .join("")
 }
 
-const EXTENSIONS: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-}
-
-export function fileName(id: string, mime: string): string {
-  return `image-${id.slice(0, 8)}.${EXTENSIONS[mime] ?? "img"}`
+/** Taille lisible, unités binaires à la française : « 3,2 Go ». */
+export function formatBytes(bytes: number): string {
+  const units = ["o", "Ko", "Mo", "Go", "To"]
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1
+  return `${value.toLocaleString("fr-FR", { maximumFractionDigits: digits })} ${units[unit]}`
 }

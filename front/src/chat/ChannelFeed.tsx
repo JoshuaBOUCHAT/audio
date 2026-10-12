@@ -4,7 +4,7 @@
 // remet à zéro le mode de saisie et le brouillon.
 
 import { useEffect, useRef, useState } from "react"
-import { CornerUpRight, ImagePlus, Pencil, Reply, Trash2, X } from "lucide-react"
+import { CornerUpRight, FolderUp, Paperclip, Pencil, Reply, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
@@ -12,6 +12,7 @@ import { Avatar } from "./Avatar"
 import { Composer, type ComposerHandle } from "./Composer"
 import { plainText } from "./media"
 import { MessageBody } from "./MessageBody"
+import { foldersFromInput } from "./zip-folder"
 import type { ChatMessage } from "./model"
 import type { ChatState, ChatStore } from "./store"
 
@@ -43,6 +44,7 @@ export function ChannelFeed({
   const [flash, setFlash] = useState<{ id: number; nonce: number } | null>(null)
   const composer = useRef<ComposerHandle>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const folderInput = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const count = messages?.length ?? 0
 
@@ -233,25 +235,47 @@ export function ChannelFeed({
             mode.kind === "edit" && "border-primary/40 focus-within:border-primary",
           )}
         >
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="m-1"
-            onClick={() => fileInput.current?.click()}
-            disabled={state.phase !== "ready"}
-            title="Ajouter une image (ou Ctrl+V, ou glisser-déposer)"
-          >
-            <ImagePlus />
-          </Button>
+          <div className="m-1 flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => fileInput.current?.click()}
+              disabled={state.phase !== "ready"}
+              title="Joindre des fichiers ou des images (ou Ctrl+V, ou glisser-déposer)"
+            >
+              <Paperclip />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => folderInput.current?.click()}
+              disabled={state.phase !== "ready"}
+              title="Envoyer un dossier (compressé en ZIP)"
+            >
+              <FolderUp />
+            </Button>
+          </div>
           <input
             ref={fileInput}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
             multiple
             hidden
             onChange={(e) => {
               composer.current?.insertFiles([...(e.target.files ?? [])])
+              e.target.value = ""
+            }}
+          />
+          <input
+            ref={folderInput}
+            type="file"
+            hidden
+            // Sélection d'un dossier entier (story 52) : attribut non standard, mais
+            // reconnu par tous les navigateurs actuels.
+            {...{ webkitdirectory: "" }}
+            onChange={(e) => {
+              composer.current?.insertFolders(foldersFromInput([...(e.target.files ?? [])]))
               e.target.value = ""
             }}
           />

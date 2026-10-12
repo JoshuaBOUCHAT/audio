@@ -14,6 +14,8 @@ import {
   deleteMedia,
   deleteMessage,
   editMessage,
+  getMedia,
+  requestDownload,
   openDm,
   getAvatar,
   requestMagicLink,
@@ -31,6 +33,7 @@ import {
   mergeMessages,
   toChannel,
   toConversation,
+  toMediaInfo,
   toMe,
   toMessage,
   toNumber,
@@ -39,6 +42,7 @@ import {
   type ChatMessage,
   type Conversation,
   type Me,
+  type MediaInfo,
   type Profile,
 } from "./model"
 import { chat } from "@/proto/messages.js"
@@ -54,8 +58,9 @@ export type Phase =
 
 export type MediaEntry =
   | { status: "loading" }
-  | { status: "ready"; url: string; ownerId: number; mime: string }
-  /** Supprimée pour tout le monde (story 50) ou inconnue. */
+  /** Métadonnées connues ; `url` : contenu chargé (images seulement, story 27). */
+  | { status: "ready"; info: MediaInfo; url?: string }
+  /** Supprimé pour tout le monde (story 50) ou inconnu. */
   | { status: "missing" }
 
 export type ChatState = {
@@ -119,6 +124,8 @@ export class ChatStore {
   private readonly avatarRequests = new Set<string>()
   /** Token de la session courante : authentifie les requêtes HTTP d'images (story 48). */
   private sessionToken: string | null = null
+  /** Ids dont les métadonnées sont à demander, envoyés en un seul `GetMedia`. */
+  private mediaQueue = new Set<string>()
   private toastTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(magicToken: string | null) {
@@ -280,7 +287,7 @@ export class ChatStore {
     clearSessionToken()
     this.sessionToken = null
     for (const entry of Object.values(this.state.media)) {
-      if (entry.status === "ready") URL.revokeObjectURL(entry.url)
+      if (entry.status === "ready" && entry.url) URL.revokeObjectURL(entry.url)
     }
     for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
     // La connexion reste authentifiée côté serveur : on repart d'un WS vierge.
@@ -378,67 +385,115 @@ export class ChatStore {
   }
 
   /**
-   * Story 27 : envoie une image (`POST /media`). Rend son id, à placer dans le message ;
-   * `null` si refusée (format, quota : erreur dans `error`). L'image envoyée est mise
-   * en cache tout de suite, sans la retélécharger.
+   * Stories 27, 51-52 : envoie un fichier (`POST /media`), image ou non. Rend ses
+   * métadonnées, pour placer son lien dans le message ; `null` si refusé (quota :
+   * erreur dans `error`). Une image envoyée est mise en cache sans la retélécharger.
+   * XMLHttpRequest plutôt que fetch : seul à donner la progression de l'envoi.
    */
-  uploadMedia = async (file: Blob): Promise<string | null> => {
-    const me = this.state.me
-    if (!this.sessionToken || !me) return null
-    let response: Response
-    try {
-      response = await fetch(`${MEDIA_BASE}/media`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.sessionToken}` },
-        body: file,
-      })
-    } catch {
-      this.set({ error: "envoi de l'image impossible (réseau)" })
-      return null
-    }
-    const body = new Uint8Array(await response.arrayBuffer())
-    if (response.status !== 201) {
-      this.set({ error: httpError(body, response.status) })
-      return null
-    }
-    const media = chat.MediaUploaded.decode(body).media
-    if (!media?.id) return null
-    this.setMedia(media.id, {
-      status: "ready",
-      url: URL.createObjectURL(file),
-      ownerId: me.id,
-      mime: media.mime ?? "",
+  uploadMedia = (
+    file: Blob,
+    options: { name: string; folder?: { files: number; size: number }; onProgress?: (ratio: number) => void },
+  ): Promise<MediaInfo | null> => {
+    const token = this.sessionToken
+    if (!token || !this.state.me) return Promise.resolve(null)
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", `${MEDIA_BASE}/media`)
+      xhr.responseType = "arraybuffer"
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+      xhr.setRequestHeader("X-Media-Name", encodeURIComponent(options.name))
+      if (options.folder) {
+        xhr.setRequestHeader("X-Folder-Files", String(options.folder.files))
+        xhr.setRequestHeader("X-Folder-Size", String(options.folder.size))
+      }
+      xhr.upload.onprogress = (e) => e.lengthComputable && options.onProgress?.(e.loaded / e.total)
+      xhr.onerror = () => {
+        this.set({ error: "envoi impossible (réseau)" })
+        resolve(null)
+      }
+      xhr.onload = () => {
+        const body = new Uint8Array(xhr.response as ArrayBuffer)
+        if (xhr.status !== 201) {
+          this.set({ error: httpError(body, xhr.status) })
+          resolve(null)
+          return
+        }
+        const media = chat.MediaUploaded.decode(body).media
+        if (!media?.id) return resolve(null)
+        const info = toMediaInfo(media)
+        this.setMedia(info.id, {
+          status: "ready",
+          info,
+          url: info.isImage ? URL.createObjectURL(file) : undefined,
+        })
+        resolve(info)
+      }
+      xhr.send(file)
     })
-    return media.id
   }
 
   /**
-   * Charge une image (`GET /media/{id}`, avec le token : story 48) si elle n'est pas
-   * déjà en cache. Appelé au rendu : idempotent.
+   * Métadonnées d'un média (story 51), demandées par lots par le WebSocket, puis le
+   * contenu s'il s'agit d'une image (`GET /media/{id}` avec le token, story 48) — un
+   * fichier n'est jamais chargé pour s'afficher. Appelé au rendu : idempotent.
    */
   ensureMedia = (id: string): void => {
-    if (this.state.media[id] || !this.sessionToken) return
+    if (this.state.media[id] || !this.client) return
     this.setMedia(id, { status: "loading" })
-    void fetch(`${MEDIA_BASE}/media/${id}`, { headers: { Authorization: `Bearer ${this.sessionToken}` } })
-      .then(async (response) => {
-        if (response.status === 404) {
-          this.setMedia(id, { status: "missing" })
-          return
-        }
-        if (!response.ok) throw new Error(String(response.status))
-        const blob = await response.blob()
-        this.setMedia(id, {
-          status: "ready",
-          url: URL.createObjectURL(blob),
-          ownerId: Number(response.headers.get("X-Media-Owner") ?? 0),
-          mime: blob.type,
-        })
+    this.mediaQueue.add(id)
+    if (this.mediaQueue.size === 1) queueMicrotask(() => void this.flushMediaQueue())
+  }
+
+  private async flushMediaQueue(): Promise<void> {
+    const ids = [...this.mediaQueue]
+    this.mediaQueue.clear()
+    const response = await this.request(getMedia(ids))
+    if (!response?.mediaInfo) {
+      // Réseau : réessayé au prochain rendu.
+      for (const id of ids) this.forgetMedia(id)
+      return
+    }
+    const found = new Map((response.mediaInfo.media ?? []).map((m) => [m.id ?? "", toMediaInfo(m)]))
+    for (const id of ids) {
+      const info = found.get(id)
+      if (!info) this.setMedia(id, { status: "missing" })
+      else {
+        this.setMedia(id, { status: "ready", info })
+        if (info.isImage) void this.loadImage(info)
+      }
+    }
+  }
+
+  private async loadImage(info: MediaInfo): Promise<void> {
+    try {
+      const response = await fetch(`${MEDIA_BASE}/media/${info.id}`, {
+        headers: { Authorization: `Bearer ${this.sessionToken}` },
       })
-      .catch(() => {
-        // Réseau ou session : réessayé au prochain rendu.
-        const { [id]: _failed, ...media } = this.state.media
-        this.set({ media })
-      })
+      if (response.status === 404) return this.markMediaMissing(info.id)
+      if (!response.ok) throw new Error(String(response.status))
+      const url = URL.createObjectURL(await response.blob())
+      this.setMedia(info.id, { status: "ready", info, url })
+    } catch {
+      this.forgetMedia(info.id)
+    }
+  }
+
+  private forgetMedia(id: string): void {
+    const { [id]: _forgotten, ...media } = this.state.media
+    this.set({ media })
+  }
+
+  /**
+   * Story 53 : téléchargement natif — ticket de 60 s, puis le navigateur télécharge
+   * lui-même (son gestionnaire, sans passer par la mémoire de l'app).
+   */
+  download = async (id: string): Promise<void> => {
+    const response = await this.request(requestDownload(id))
+    const ticket = response?.downloadTicket?.ticket
+    if (!ticket) return
+    const a = document.createElement("a")
+    a.href = `${MEDIA_BASE}/media/${id}?ticket=${ticket}`
+    a.click()
   }
 
   /** Story 50 : « pour tout le monde », par celle ou celui qui l'a envoyée. */
@@ -453,7 +508,7 @@ export class ChatStore {
 
   private markMediaMissing(id: string): void {
     const entry = this.state.media[id]
-    if (entry?.status === "ready") URL.revokeObjectURL(entry.url)
+    if (entry?.status === "ready" && entry.url) URL.revokeObjectURL(entry.url)
     this.setMedia(id, { status: "missing" })
   }
 
