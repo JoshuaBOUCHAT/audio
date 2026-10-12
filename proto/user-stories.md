@@ -173,12 +173,21 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
 28. En tant qu'utilisateur, je veux démarrer une conversation privée à 1-à-1 avec un
     autre utilisateur, sans passer par un admin (contrairement aux salons, story 7) —
     n'importe quel utilisateur peut ouvrir un DM avec n'importe quel autre.
+    **Décisions (2026-10-12)** : on ouvre un DM depuis la liste des membres (story 23),
+    ce qui bascule directement sur cette conversation ; un seul DM par paire
+    (rouvrir rend l'existant), pas de DM avec soi-même. L'autre ne voit la
+    conversation qu'**au premier message** (comme Discord) : ouvrir sans écrire ne lui
+    révèle rien.
 29. En tant qu'utilisateur, je veux que le contenu de mes conversations privées ne soit
     **jamais** envoyé aux clients connectés qui n'en sont pas participants — pas de
     broadcast global comme pour les salons (voir décision de conception révisée
     ci-dessous). C'est la propriété qui distingue fondamentalement un DM d'un salon.
 30. En tant qu'utilisateur, je veux voir la liste de mes conversations privées
     existantes dès ma connexion, sans avoir à les rechercher.
+    **Décisions (2026-10-12)** : un bouton en haut à gauche bascule la colonne entre
+    les salons et les conversations privées ; celles-ci sont triées par dernière
+    activité (dernier message, à défaut création), avec photo et statut de l'autre.
+    Le fil reprend l'interface d'un salon (réponse, modification, suppression).
 31. En tant qu'utilisateur, je veux envoyer/recevoir des messages en temps réel dans une
     conversation privée, avec le même mécanisme de synchronisation (`last_seen_id`) que
     pour les salons.
@@ -197,6 +206,10 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
     avec le reste de la posture "pas de chiffrement au repos" déjà assumée pour tout le
     système (cf. CLAUDE.md) — le chiffrement disque, si souhaité, reste une
     responsabilité infra (LUKS), pas une feature applicative.
+    **Réaffirmé le 2026-10-12** : l'admin ne doit rien voir des DM via l'app — un
+    non-participant reçoit 404 sur tout DM (lecture, envoi, sync, suppression),
+    comme s'il n'existait pas. Piste pour le disque : snapshots chiffrés côté oxidart
+    (clé fournie par variable d'environnement), sans chiffrement de bout en bout.
 
 ---
 

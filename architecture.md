@@ -137,6 +137,8 @@ borné au nombre d'entrées demandées.
 |---|---|---|
 | `user:{id}` | `User` (bincode) | `id` = compteur global |
 | `email_index:{email}` | `user_id` (u64) | résout un email vers un compte existant |
+| `dm:{id}` | `Channel` (bincode, type DM) | préfixe distinct de `channel:` : la liste des salons ne parcourt jamais les DM (stories 28-32) |
+| `user_dms:{user_id}:{autre_id}` | id du DM | ids en hex sur 9 caractères ; `krange("user_dms:{moi}:")` = mes DM seulement, « DM avec X ? » = un `get`. L'entrée de l'autre n'est posée qu'au premier message (story 28) ; la dernière activité se lit par `krange` inversé à 1 entrée sur `message:{dm}:`, aucune écriture de plus |
 | `pseudo_index:{pseudo en minuscules}` | `user_id` (u64) | unicité du pseudo casse ignorée (stories 34-35) ; supprimée/réécrite à chaque changement |
 | `avatar:{user_id}` | image (PNG/JPEG/WebP, ≤ 256 Kio) | photo de profil (story 37) ; sa version vit dans `User.avatar_version` |
 | `magiclink:{token}` | `email` (string) | **TTL courte** via `set_ttl` — expire seule, zéro code de nettoyage |

@@ -53,6 +53,14 @@ message Channel {
   repeated uint64 participant_ids = 4;
 }
 
+// Conversation privée vue par un participant (stories 28-30).
+message Conversation {
+  Channel channel = 1;         // type == DM, participant_ids = les deux utilisateurs
+  // Id du dernier message, 0 = aucun. Les ids viennent du compteur global : trier par
+  // max(last_message_id, channel.id) trie par dernière activité (story 30).
+  uint64 last_message_id = 2;
+}
+
 message Message {
   uint64 id = 1;
   uint64 channel_id = 2;
@@ -84,6 +92,7 @@ message ClientEnvelope {
     GetAvatar         get_avatar         = 10; // story 36
     EditMessage       edit_message       = 11; // story 40
     SetStatus         set_status         = 12; // story 41
+    OpenDm            open_dm            = 13; // story 28
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -141,6 +150,12 @@ message SetPseudo {
   string pseudo = 1;
 }
 
+// Story 28 : DM avec `user_id` (créé s'il n'existe pas, sinon l'existant). Réponse :
+// DmOpened. 400 avec soi-même, 404 si l'utilisateur n'existe pas ou n'a pas de pseudo.
+message OpenDm {
+  uint64 user_id = 1;
+}
+
 // Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
 // suite (story 41).
 message SetStatus {
@@ -185,6 +200,7 @@ message ServerEnvelope {
     MessageEdited   message_edited    = 11;
     StatusSet       status_set        = 12;
     PresenceChanged presence_changed  = 13;
+    DmOpened        dm_opened         = 14;
   }
 }
 
@@ -204,6 +220,9 @@ message AuthResponse {
   // Story 23 : utilisateurs vus en ligne par les autres à cet instant (ni invisibles,
   // ni dans leurs 15 premières secondes, story 42). Peut inclure `me`.
   repeated uint64 online_user_ids = 5;
+  // Story 30 : mes conversations privées (celles que j'ai ouvertes ou qui ont reçu un
+  // message), non triées.
+  repeated Conversation dms = 6;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -235,6 +254,14 @@ message ChannelCreated {
 // réponse directe à l'auteur du changement.
 message UserUpdated {
   UserProfile profile = 1;
+}
+
+// Réponse à OpenDm ; aussi poussé (request_id vide) à l'autre participant avant le
+// premier message du DM (story 28), et aux autres connexions de celui qui l'ouvre.
+// Les NewMessage / MessageEdited / MessageDeleted d'un DM ne vont qu'à ses deux
+// participants (story 29).
+message DmOpened {
+  Conversation conversation = 1;
 }
 
 // Ack de SetStatus, à l'auteur seul (le statut n'est jamais transmis aux autres).
