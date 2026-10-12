@@ -135,6 +135,18 @@ Numérotées à la suite (34+), même convention que les stories 28 et 33.
     photo est conçue pour ça : un id tiré du compteur global à chaque changement, qui
     sert aujourd'hui de clé de cache côté client et demain de paramètre d'URL.
 
+43. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux ajouter une description
+    à mon profil (« À propos de moi »), visible par les autres dans ma carte de
+    profil, pour donner un peu de personnalité. **Décisions** : texte libre, retours
+    à la ligne permis, 190 caractères max (comme Discord), trimé, vide = pas de
+    description ; transmise dans le profil public (story 36) et mise à jour en temps
+    réel.
+44. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux qu'un clic sur un
+    membre de la liste ouvre sa carte de profil (grande photo, pseudo, statut,
+    description) avec un bouton « Envoyer un message » pour ouvrir le DM (story 28),
+    plutôt qu'un DM ouvert directement au clic. Sur ma propre carte, le bouton ouvre
+    l'édition de mon profil. Détail client, aucun impact protocole.
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.

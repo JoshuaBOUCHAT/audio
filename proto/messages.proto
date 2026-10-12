@@ -19,6 +19,7 @@ message User {
   string pseudo = 4;         // vide tant que non choisi (story 34)
   uint64 avatar_version = 5; // 0 = pas de photo (story 37)
   Status status = 6;         // story 41 : choix mémorisé, jamais transmis aux autres
+  string bio = 7;            // story 43 : description, vide = aucune
 }
 
 // Story 41 : statut choisi. « Hors ligne » n'en est pas un : c'est ce que voient les
@@ -35,6 +36,7 @@ message UserProfile {
   uint64 id = 1;
   string pseudo = 2;
   uint64 avatar_version = 3; // 0 = pas de photo
+  string bio = 4;            // story 43 : description, vide = aucune
 }
 
 message Channel {
@@ -93,6 +95,7 @@ message ClientEnvelope {
     EditMessage       edit_message       = 11; // story 40
     SetStatus         set_status         = 12; // story 41
     OpenDm            open_dm            = 13; // story 28
+    SetBio            set_bio            = 14; // story 43
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -154,6 +157,12 @@ message SetPseudo {
 // DmOpened. 400 avec soi-même, 404 si l'utilisateur n'existe pas ou n'a pas de pseudo.
 message OpenDm {
   uint64 user_id = 1;
+}
+
+// Story 43 : trimée, ≤ 190 caractères, retours à la ligne permis ; vide = retirer.
+// Réponse : UserUpdated (aussi diffusé).
+message SetBio {
+  string bio = 1;
 }
 
 // Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
