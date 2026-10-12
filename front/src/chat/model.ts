@@ -16,6 +16,10 @@ export type ChatMessage = {
   content: string
   timestamp: number
   deleted: boolean
+  /** Story 39 : message cité, 0 = pas une réponse. */
+  replyToId: number
+  /** Story 40 : ms epoch de la dernière modification, 0 = jamais. */
+  editedAt: number
 }
 
 export function toNumber(value: number | Long | null | undefined): number {
@@ -58,6 +62,8 @@ export function toMessage(message: chat.IMessage): ChatMessage {
     content: message.content ?? "",
     timestamp: toNumber(message.timestamp),
     deleted: message.deleted ?? false,
+    replyToId: toNumber(message.replyToId),
+    editedAt: toNumber(message.editedAt),
   }
 }
 

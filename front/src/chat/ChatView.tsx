@@ -1,13 +1,13 @@
 // Vue principale : liste des salons (création si admin, story 7) + fil du salon
-// sélectionné (stories 10-14), auteurs par pseudo et photo (story 36).
+// sélectionné (`ChannelFeed`).
 
-import { useEffect, useRef, useState } from "react"
-import { Hash, LogOut, Plus, Trash2 } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Hash, LogOut, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
-import type { ChatMessage } from "./model"
+import { ChannelFeed } from "./ChannelFeed"
 import { ProfilePanel } from "./ProfilePanel"
 import type { ChatState, ChatStore } from "./store"
 
@@ -95,15 +95,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
         )}
 
         {channel ? (
-          <>
-            <MessageList state={state} messages={state.messages[channel.id]} store={store} />
-            <Composer
-              key={channel.id}
-              channelName={channel.name}
-              disabled={state.phase !== "ready"}
-              onSend={(content) => store.send(channel.id, content)}
-            />
-          </>
+          <ChannelFeed key={channel.id} channel={channel} state={state} store={store} />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
             Aucun salon sélectionné.
@@ -150,112 +142,4 @@ function CreateChannel({ store }: { store: ChatStore }) {
       </Button>
     </form>
   )
-}
-
-function MessageList({
-  state,
-  messages,
-  store,
-}: {
-  state: ChatState
-  messages: ChatMessage[] | undefined
-  store: ChatStore
-}) {
-  const me = state.me!
-  const scroller = useRef<HTMLDivElement>(null)
-  const count = messages?.length ?? 0
-
-  // Reste collé en bas à chaque nouveau message (pas encore d'historique paginé).
-  useEffect(() => {
-    const el = scroller.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [count])
-
-  if (!messages) {
-    return <div className="flex-1 p-4 text-sm text-muted-foreground">Chargement…</div>
-  }
-  return (
-    <div ref={scroller} className="flex-1 overflow-y-auto py-2">
-      {messages.length === 0 && (
-        <p className="px-4 text-sm text-muted-foreground">Pas encore de message. Lance la discussion.</p>
-      )}
-      {messages.map((m, i) => {
-        const grouped = i > 0 && messages[i - 1].userId === m.userId && !messages[i - 1].deleted
-        const canDelete = !m.deleted && (m.userId === me.id || me.isAdmin)
-        return (
-          <div key={m.id} className={cn("group relative py-0.5 pr-12 pl-16 hover:bg-muted/50", !grouped && "mt-3")}>
-            {!grouped && (
-              <Avatar userId={m.userId} state={state} store={store} className="absolute top-1 left-4" />
-            )}
-            {!grouped && (
-              <div className="flex items-baseline gap-2">
-                <span className="text-sm font-semibold">
-                  {state.users[m.userId]?.pseudo ?? `Utilisateur #${m.userId}`}
-                </span>
-                <time className="text-xs text-muted-foreground" dateTime={new Date(m.timestamp).toISOString()}>
-                  {formatTime(m.timestamp)}
-                </time>
-              </div>
-            )}
-            {m.deleted ? (
-              <p className="text-sm italic text-muted-foreground">message supprimé</p>
-            ) : (
-              <p className="text-sm whitespace-pre-wrap break-words">{m.content}</p>
-            )}
-            {canDelete && (
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="absolute top-0 right-2 hidden group-hover:inline-flex"
-                onClick={() => void store.remove(m.channelId, m.id)}
-                title="Supprimer"
-              >
-                <Trash2 />
-              </Button>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function Composer({
-  channelName,
-  disabled,
-  onSend,
-}: {
-  channelName: string
-  disabled: boolean
-  onSend: (content: string) => Promise<boolean>
-}) {
-  const [content, setContent] = useState("")
-  return (
-    <form
-      className="shrink-0 p-4 pt-0"
-      onSubmit={async (e) => {
-        e.preventDefault()
-        const text = content.trim()
-        if (!text) return
-        // Vidé seulement si le serveur a accepté : un échec garde le texte à renvoyer.
-        if (await onSend(text)) setContent("")
-      }}
-    >
-      <Input
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        placeholder={`Message #${channelName}`}
-        disabled={disabled}
-        autoFocus
-      />
-    </form>
-  )
-}
-
-function formatTime(ms: number): string {
-  const date = new Date(ms)
-  const sameDay = date.toDateString() === new Date().toDateString()
-  return sameDay
-    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : date.toLocaleString([], { dateStyle: "short", timeStyle: "short" })
 }

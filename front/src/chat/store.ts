@@ -12,6 +12,7 @@ import {
   authRequest,
   createChannel,
   deleteMessage,
+  editMessage,
   getAvatar,
   requestMagicLink,
   sendMessage,
@@ -240,9 +241,19 @@ export class ChatStore {
     this.setMessages(channelId, (current) => mergeMessages(current, synced))
   }
 
-  send = async (channelId: number, content: string): Promise<boolean> => {
-    const response = await this.request(sendMessage(channelId, content))
+  /** `replyToId` : message cité (story 39), 0 = pas une réponse. */
+  send = async (channelId: number, content: string, replyToId = 0): Promise<boolean> => {
+    const response = await this.request(sendMessage(channelId, content, replyToId))
     const message = response?.newMessage?.message
+    if (!message) return false
+    this.addMessage(toMessage(message))
+    return true
+  }
+
+  /** Story 40. */
+  edit = async (channelId: number, messageId: number, content: string): Promise<boolean> => {
+    const response = await this.request(editMessage(channelId, messageId, content))
+    const message = response?.messageEdited?.message
     if (!message) return false
     this.addMessage(toMessage(message))
     return true
@@ -331,6 +342,10 @@ export class ChatStore {
     switch (envelope.payload) {
       case "newMessage":
         if (envelope.newMessage?.message) this.addMessage(toMessage(envelope.newMessage.message))
+        break
+      case "messageEdited":
+        // Même id : `mergeMessages` remplace la version précédente.
+        if (envelope.messageEdited?.message) this.addMessage(toMessage(envelope.messageEdited.message))
         break
       case "messageDeleted": {
         const d = envelope.messageDeleted
