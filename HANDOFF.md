@@ -47,6 +47,11 @@ Le token du lien magique s'affiche dans la console serveur (`[auth] lien magique
   encodage (un dump antérieur n'est plus relu correctement).
 - Broadcast : connexions authentifiées seulement ; file d'envoi non bornée (TODO.md).
 - Nom de salon unique par type (un salon vocal pourra reprendre le nom d'un salon texte).
+- Persistance en bincode, gardée volontairement (2026-10-12) : un dump dont le schéma
+  ne correspond plus fait planter le chargement plutôt que d'être relu avec des
+  valeurs par défaut qui masqueraient une incohérence. En dev, après un changement de
+  `User`/`Channel`/`Message`, supprimer `data/dump.rxd`. Protobuf comme format de
+  stockage écarté pour cette raison.
 
 ## Client front (2026-10-12) — fonctionnel, pas encore relu visuellement
 
