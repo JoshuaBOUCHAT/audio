@@ -25,6 +25,10 @@ fn main() {
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute(
+            "chat.Invite",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
             "chat.ChannelRule",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )

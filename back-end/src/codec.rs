@@ -190,9 +190,10 @@ mod tests {
             status: proto::Status::Invisible as i32,
             bio: "salut".into(),
             theme: proto::Theme::Dark as i32,
+            has_password: true,
         };
         let mut old = encode(&user);
-        old.truncate(old.len() - 4); // `theme` (i32) pas encore là
+        old.truncate(old.len() - 5); // `theme` (i32) et `has_password` (bool) pas encore là
         let mut art = OxidArt::new();
         art.set(SharedByte::from_str("user:3"), Value::String(SharedByte::from_slice(old)));
 

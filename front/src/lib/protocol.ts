@@ -53,6 +53,38 @@ export function openDm(userId: number): ClientEnvelopeShape {
   return { payload: "openDm", openDm: { userId } };
 }
 
+/** Story 67. */
+export function passwordLogin(email: string, password: string): ClientEnvelopeShape {
+  return { payload: "passwordLogin", passwordLogin: { email, password } };
+}
+
+/** Story 66 : création du compte depuis un lien d'invitation. */
+export function acceptInvite(token: string, email: string, pseudo: string, password: string): ClientEnvelopeShape {
+  return { payload: "acceptInvite", acceptInvite: { token, email, pseudo, password } };
+}
+
+/** Story 67 : `current` vide si le compte n'a pas encore de mot de passe. */
+export function setPassword(current: string, password: string): ClientEnvelopeShape {
+  return { payload: "setPassword", setPassword: { current, password } };
+}
+
+/** Stories 65, 68 (admin). */
+export function createInvite(ttlSeconds: number): ClientEnvelopeShape {
+  return { payload: "createInvite", createInvite: { ttlSeconds } };
+}
+
+export function listInvites(): ClientEnvelopeShape {
+  return { payload: "listInvites", listInvites: {} };
+}
+
+export function revokeInvite(token: string): ClientEnvelopeShape {
+  return { payload: "revokeInvite", revokeInvite: { token } };
+}
+
+export function createLoginLink(userId: number, ttlSeconds: number): ClientEnvelopeShape {
+  return { payload: "createLoginLink", createLoginLink: { userId, ttlSeconds } };
+}
+
 /** Story 69 : « tu es là ? ». */
 export function heartbeat(): ClientEnvelopeShape {
   return { payload: "heartbeat", heartbeat: {} };

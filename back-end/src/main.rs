@@ -1,3 +1,4 @@
+mod accounts;
 mod codec;
 mod email;
 mod http;
@@ -37,10 +38,6 @@ use presence::{Presence, SharedPresence};
 use registry::{ConnId, SharedRegistry, TlsStream};
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-// Story 4 : pas de valeur imposée par CLAUDE.md, 15 minutes retenu (assez court pour
-// limiter le risque si les logs fuitent, assez long pour qu'un ami aille chercher le
-// lien transmis à la main en v1).
-const MAGIC_LINK_TTL: Duration = Duration::from_secs(15 * 60);
 /// Story 69 : intervalle du ping serveur ; une connexion silencieuse pendant trois
 /// intervalles (aucune trame, pas même un pong) est morte. `AUDIO_HEARTBEAT_MS` le
 /// raccourcit (tests).
@@ -65,6 +62,7 @@ struct AppState {
     dirty: Rc<Cell<bool>>,
     presence: SharedPresence,
     media: Rc<media::MediaConfig>,
+    passwords: Rc<accounts::Passwords>,
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -122,6 +120,7 @@ async fn main() {
         dirty,
         presence: Rc::new(RefCell::new(Presence::from_env())),
         media: Rc::new(media::MediaConfig::from_env(&persist::data_dir())),
+        passwords: Rc::new(accounts::Passwords::load(&persist::data_dir())),
     };
 
     if cfg!(debug_assertions) {
@@ -133,6 +132,19 @@ async fn main() {
 
     // `AUDIO_LISTEN` : autre adresse que celle de dev, ex. un second serveur de test.
     let listen = env::var("AUDIO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
+    // Story 65 : tant que le compte du bootstrap admin n'existe pas, une invitation
+    // pour lui à chaque démarrage (la console reste la porte d'entrée initiale).
+    if let Some(email) = &state.bootstrap_admin_email {
+        let mut art = state.art.borrow_mut();
+        if find_user_by_email(&mut art, email).is_none() {
+            let invite = accounts::create_invite(&mut art, Duration::from_secs(7 * 24 * 3600));
+            println!(
+                "[boot] compte admin {email} à créer : ouvrir /?invite={} (7 jours, avec cet email)",
+                invite.token
+            );
+        }
+    }
+
     // Story 69 : un seul minuteur pour tout le serveur, pas un par connexion.
     let registry = state.registry.clone();
     monoio::spawn(async move {
@@ -255,43 +267,83 @@ fn handle_client_envelope(
     use proto::client_envelope::Payload;
 
     let payload = match envelope.payload {
-        Some(Payload::RequestMagicLink(req)) => match validate::validate_request_magic_link(req)
-        {
-            Ok(valid) => {
-                // V1 : le lien est simplement loggé côté serveur, jamais envoyé par
-                // email (cf. CLAUDE.md § Authentification). Ack volontairement vide
-                // (MagicLinkSent) pour ne pas révéler si l'email correspond à un
-                // compte existant.
-                let token = Uuid::new_v4();
-                state.art.borrow_mut().set_ttl(
-                    SharedByte::from_str(&format!("magic_link:{token}")),
-                    MAGIC_LINK_TTL,
-                    Value::String(valid.email.as_shared_byte()),
-                );
-                println!("[auth] lien magique pour {} : token={token}", valid.email);
-                proto::server_envelope::Payload::MagicLinkSent(proto::MagicLinkSent {})
-            }
+        // Stories 65-68 : on ne demande plus soi-même un lien ; seul l'admin en crée.
+        Some(Payload::RequestMagicLink(_)) => proto::server_envelope::Payload::Error(proto::Error {
+            code: 403,
+            message: "les liens de connexion sont créés par l'admin".to_string(),
+        }),
+        Some(Payload::Auth(req)) => {
+            let result = validate::validate_auth_request(req).and_then(|valid| handle_auth(valid.token, state, user_id));
+            authenticated(state, conn, result)
+        }
+        Some(Payload::PasswordLogin(req)) => authenticated(state, conn, password_login(req, state, user_id)),
+        Some(Payload::AcceptInvite(req)) => authenticated(state, conn, accept_invite(req, state, user_id)),
+        Some(Payload::SetPassword(req)) => match set_password(req, state, *user_id) {
+            Ok(()) => proto::server_envelope::Payload::PasswordSet(proto::PasswordSet {}),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
-        Some(Payload::Auth(req)) => match validate::validate_auth_request(req) {
-            Ok(valid) => match handle_auth(valid.token, state, user_id) {
-                Ok(mut response) => {
-                    let me = response.me.as_ref().expect("AuthResponse.me toujours rempli");
-                    state.registry.borrow_mut().mark_authenticated(conn, me.id);
-                    presence::connected(
-                        &state.presence,
-                        &state.registry,
-                        conn,
-                        me.id,
-                        me.status() == proto::Status::Invisible,
-                    );
-                    response.online_user_ids = state.presence.borrow().online_ids();
-                    proto::server_envelope::Payload::AuthResponse(response)
-                }
+        Some(Payload::CreateInvite(req)) => {
+            let created = (|| {
+                let mut art = state.art.borrow_mut();
+                require_admin(&mut art, *user_id)?;
+                let ttl = accounts::link_ttl(req.ttl_seconds)?;
+                state.dirty.set(true);
+                Ok(accounts::create_invite(&mut art, ttl))
+            })();
+            match created {
+                Ok(invite) => proto::server_envelope::Payload::InviteCreated(proto::InviteCreated { invite: Some(invite) }),
                 Err(err) => proto::server_envelope::Payload::Error(err),
-            },
-            Err(err) => proto::server_envelope::Payload::Error(err),
-        },
+            }
+        }
+        Some(Payload::ListInvites(_)) => {
+            let listed = (|| {
+                let mut art = state.art.borrow_mut();
+                require_admin(&mut art, *user_id)?;
+                Ok(accounts::list_invites(&art))
+            })();
+            match listed {
+                Ok(invites) => proto::server_envelope::Payload::Invites(proto::Invites { invites }),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
+        Some(Payload::RevokeInvite(req)) => {
+            let revoked = (|| {
+                let mut art = state.art.borrow_mut();
+                require_admin(&mut art, *user_id)?;
+                if !accounts::take_invite(&mut art, &req.token) {
+                    return Err(proto::Error {
+                        code: 404,
+                        message: "invitation inconnue ou déjà utilisée".to_string(),
+                    });
+                }
+                state.dirty.set(true);
+                Ok(())
+            })();
+            match revoked {
+                Ok(()) => proto::server_envelope::Payload::InviteRevoked(proto::InviteRevoked { token: req.token }),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
+        Some(Payload::CreateLoginLink(req)) => {
+            let created = (|| {
+                let mut art = state.art.borrow_mut();
+                require_admin(&mut art, *user_id)?;
+                let ttl = accounts::link_ttl(req.ttl_seconds)?;
+                if !keys::is_sortable(req.user_id) || art.get(format!("user:{}", req.user_id).as_bytes()).is_none() {
+                    return Err(proto::Error {
+                        code: 404,
+                        message: "membre inconnu".to_string(),
+                    });
+                }
+                let email = load_user(&mut art, req.user_id).email;
+                state.dirty.set(true);
+                Ok(accounts::create_login_link(&mut art, &email, ttl))
+            })();
+            match created {
+                Ok(link) => proto::server_envelope::Payload::LoginLinkCreated(link),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
         Some(Payload::CreateChannel(req)) => match create_channel(req, state, *user_id) {
             Ok(channel) => {
                 let created = proto::server_envelope::Payload::ChannelCreated(
@@ -529,6 +581,31 @@ fn dev_login_email(_token: Uuid, _state: &AppState) -> Option<Email> {
     None
 }
 
+/// Fin commune de toutes les portes d'entrée (lien, session, mot de passe,
+/// invitation) : la connexion rejoint les broadcasts et la présence.
+fn authenticated(
+    state: &AppState,
+    conn: ConnId,
+    result: Result<proto::AuthResponse, proto::Error>,
+) -> proto::server_envelope::Payload {
+    match result {
+        Ok(mut response) => {
+            let me = response.me.as_ref().expect("AuthResponse.me toujours rempli");
+            state.registry.borrow_mut().mark_authenticated(conn, me.id);
+            presence::connected(
+                &state.presence,
+                &state.registry,
+                conn,
+                me.id,
+                me.status() == proto::Status::Invisible,
+            );
+            response.online_user_ids = state.presence.borrow().online_ids();
+            proto::server_envelope::Payload::AuthResponse(response)
+        }
+        Err(err) => proto::server_envelope::Payload::Error(err),
+    }
+}
+
 /// Événement poussé (request_id vide), déjà encodé en frame.
 fn event(payload: proto::server_envelope::Payload) -> Vec<u8> {
     server_frame(&proto::ServerEnvelope {
@@ -610,78 +687,194 @@ fn handle_auth(
         None => dev_login_email(token, state),
     };
     let (user, session_token) = if let Some(email) = login_email {
-        let email_index_key = format!("email_index:{email}");
-        let user = match art.get(email_index_key.as_bytes()) {
-            Some(id_val) => {
-                let id: u64 = id_val
-                    .as_bytes()
-                    .expect("email_index:{email} toujours Value::String")
-                    .as_str()
-                    .expect("id toujours ASCII")
-                    .parse()
-                    .expect("id_counter toujours numérique");
-                load_user(&mut art, id)
-            }
-            None => {
-                let id = art
-                    .incr(SharedByte::from_str("id_counter"))
-                    .expect("id_counter jamais utilisé pour autre chose qu'un entier")
-                    as u64;
-                let is_admin = state.bootstrap_admin_email.as_ref() == Some(&email);
-                // Pseudo vide : choisi ensuite par SetPseudo (story 34).
-                let user = proto::User {
-                    id,
-                    email: email.to_string(),
-                    is_admin,
-                    pseudo: String::new(),
-                    avatar_version: 0,
-                    status: proto::Status::Online as i32,
-                    bio: String::new(),
-                    theme: proto::Theme::System as i32,
-                };
-                save_user(&mut art, &user);
-                art.set(
-                    SharedByte::from_str(&email_index_key),
-                    Value::String(SharedByte::from_str(&id.to_string())),
-                );
-                user
-            }
+        let user = match find_user_by_email(&mut art, &email) {
+            Some(id) => load_user(&mut art, id),
+            None => create_user(&mut art, state, &email),
         };
-
-        let session_token = Uuid::new_v4();
-        art.set(
-            SharedByte::from_str(&format!("session:{session_token}")),
-            Value::String(SharedByte::from_str(&user.id.to_string())),
-        );
+        let session_token = new_session(&mut art, user.id);
         state.dirty.set(true);
         (user, session_token)
     } else {
         let id = session_user(&mut art, token).ok_or_else(invalid_token)?;
         (load_user(&mut art, id), token) // token de session déjà valide : pas de rotation, renvoyé tel quel
     };
-
     user_id_slot.replace(user.id);
-    let channels = list_channels(&art);
-    let users = list_profiles(&art);
-    let dms = list_dms(&mut art, user.id);
+    Ok(auth_response(&mut art, user, session_token))
+}
+
+fn find_user_by_email(art: &mut OxidArt, email: &Email) -> Option<u64> {
+    let id_val = art.get(format!("email_index:{email}").as_bytes())?;
+    Some(
+        id_val
+            .as_bytes()
+            .expect("email_index:{email} toujours Value::String")
+            .as_str()
+            .expect("id toujours ASCII")
+            .parse()
+            .expect("id_counter toujours numérique"),
+    )
+}
+
+/// Nouveau compte (pseudo vide : choisi ensuite, story 34) ; admin si c'est l'email
+/// du bootstrap (story 3).
+fn create_user(art: &mut OxidArt, state: &AppState, email: &Email) -> proto::User {
+    let id = art
+        .incr(SharedByte::from_str("id_counter"))
+        .expect("id_counter jamais utilisé pour autre chose qu'un entier") as u64;
+    let user = proto::User {
+        id,
+        email: email.to_string(),
+        is_admin: state.bootstrap_admin_email.as_ref() == Some(email),
+        status: proto::Status::Online as i32,
+        theme: proto::Theme::System as i32,
+        ..Default::default()
+    };
+    save_user(art, &user);
+    art.set(
+        SharedByte::from_str(&format!("email_index:{email}")),
+        Value::String(SharedByte::from_str(&id.to_string())),
+    );
+    user
+}
+
+fn new_session(art: &mut OxidArt, user_id: u64) -> Uuid {
+    let session_token = Uuid::new_v4();
+    art.set(
+        SharedByte::from_str(&format!("session:{session_token}")),
+        Value::String(SharedByte::from_str(&user_id.to_string())),
+    );
+    session_token
+}
+
+/// Tout ce qu'un client reçoit en se connectant, quelle que soit la porte (lien,
+/// session, mot de passe, invitation).
+fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uuid) -> proto::AuthResponse {
+    user.has_password = accounts::password_hash(art, user.id).is_some();
+    let channels = list_channels(art);
+    let users = list_profiles(art);
+    let dms = list_dms(art, user.id);
     // Story 56 : non-lus de chaque conversation visible.
     let unread = channels
         .iter()
         .map(|c| c.id)
         .chain(dms.iter().filter_map(|d| d.channel.as_ref().map(|c| c.id)))
-        .map(|id| reads::unread(&mut art, user.id, id))
+        .map(|id| reads::unread(art, user.id, id))
         .collect();
-    let settings = Some(reads::settings(&mut art, user.id));
-    Ok(proto::AuthResponse {
+    let settings = Some(reads::settings(art, user.id));
+    proto::AuthResponse {
         me: Some(user),
         channels,
         session_token: session_token.to_string(),
         users,
-        online_user_ids: Vec::new(), // rempli par l'appelant, après `presence::connected`
+        online_user_ids: Vec::new(), // rempli par `authenticated`, après `presence::connected`
         dms,
         unread,
         settings,
-    })
+    }
+}
+
+/// Story 67 : email + mot de passe. Même erreur pour un email inconnu et un mauvais
+/// mot de passe (un hash factice est vérifié : même durée) ; 10 échecs bloquent
+/// l'email 15 min.
+fn password_login(
+    req: proto::PasswordLogin,
+    state: &AppState,
+    user_id_slot: &mut Option<u64>,
+) -> Result<proto::AuthResponse, proto::Error> {
+    let email = Email::parse(&req.email)?;
+    let mut art = state.art.borrow_mut();
+    accounts::check_lockout(&mut art, email.as_ref())?;
+    let id = find_user_by_email(&mut art, &email);
+    let hash = id.and_then(|id| accounts::password_hash(&mut art, id));
+    if !state.passwords.verify(&req.password, hash.as_deref()) {
+        accounts::record_failure(&mut art, email.as_ref());
+        return Err(proto::Error {
+            code: 401,
+            message: "email ou mot de passe incorrect".to_string(),
+        });
+    }
+    accounts::clear_failures(&mut art, email.as_ref());
+    let user = load_user(&mut art, id.expect("mot de passe vérifié : compte existant"));
+    let session = new_session(&mut art, user.id);
+    state.dirty.set(true);
+    user_id_slot.replace(user.id);
+    Ok(auth_response(&mut art, user, session))
+}
+
+/// Story 66 : création du compte sur invitation (email, pseudo, mot de passe), puis
+/// connexion. L'invitation n'est consommée qu'une fois tout validé.
+fn accept_invite(
+    req: proto::AcceptInvite,
+    state: &AppState,
+    user_id_slot: &mut Option<u64>,
+) -> Result<proto::AuthResponse, proto::Error> {
+    let email = Email::parse(&req.email)?;
+    let pseudo = validate::validate_set_pseudo(proto::SetPseudo { pseudo: req.pseudo })?.pseudo;
+    accounts::validate_password(&req.password)?;
+    let hash = state.passwords.hash(&req.password);
+    let mut art = state.art.borrow_mut();
+    if !accounts::invite_exists(&mut art, &req.token) {
+        return Err(proto::Error {
+            code: 404,
+            message: "invitation invalide, expirée ou déjà utilisée".to_string(),
+        });
+    }
+    if find_user_by_email(&mut art, &email).is_some() {
+        return Err(proto::Error {
+            code: 409,
+            message: "un compte existe déjà avec cet email".to_string(),
+        });
+    }
+    if art.get(pseudo_index_key(&pseudo).as_bytes()).is_some() {
+        return Err(proto::Error {
+            code: 409,
+            message: "pseudo déjà pris".to_string(),
+        });
+    }
+    accounts::take_invite(&mut art, &req.token);
+    let mut user = create_user(&mut art, state, &email);
+    art.set(
+        SharedByte::from_str(&pseudo_index_key(&pseudo)),
+        Value::String(SharedByte::from_str(&user.id.to_string())),
+    );
+    user.pseudo = pseudo;
+    save_user(&mut art, &user);
+    accounts::store_password(&mut art, user.id, &hash);
+    let session = new_session(&mut art, user.id);
+    state.dirty.set(true);
+    user_id_slot.replace(user.id);
+    Ok(auth_response(&mut art, user, session))
+}
+
+/// Story 67 : définir (compte venu d'un lien) ou changer son mot de passe — l'actuel
+/// est demandé s'il existe.
+fn set_password(req: proto::SetPassword, state: &AppState, user_id: Option<u64>) -> Result<(), proto::Error> {
+    let user_id = require_auth(user_id)?;
+    accounts::validate_password(&req.password)?;
+    let mut art = state.art.borrow_mut();
+    let current = accounts::password_hash(&mut art, user_id);
+    if current.is_some() && !state.passwords.verify(&req.current, current.as_deref()) {
+        return Err(proto::Error {
+            code: 401,
+            message: "mot de passe actuel incorrect".to_string(),
+        });
+    }
+    let hash = state.passwords.hash(&req.password);
+    accounts::store_password(&mut art, user_id, &hash);
+    state.dirty.set(true);
+    Ok(())
+}
+
+/// Stories 65, 68 : actions réservées à l'admin.
+fn require_admin(art: &mut OxidArt, user_id: Option<u64>) -> Result<(), proto::Error> {
+    let user_id = require_auth(user_id)?;
+    if !load_user(art, user_id).is_admin {
+        return Err(proto::Error {
+            code: 403,
+            message: "réservé à l'admin".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Utilisateur d'un token de session (story 33) : WebSocket (`AuthRequest`) et HTTP

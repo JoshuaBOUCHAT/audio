@@ -35,12 +35,6 @@ impl Email {
         }
         Ok(Self(SharedByte::from_str(&trimmed.to_lowercase())))
     }
-
-    /// Clé OxidArt prête à l'emploi (`SharedByte`, cheap clone) — pas de conversion
-    /// String↔SharedByte à la frontière de persistance.
-    pub fn as_shared_byte(&self) -> SharedByte {
-        self.0.clone()
-    }
 }
 
 impl PartialEq for Email {
