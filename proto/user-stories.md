@@ -199,6 +199,43 @@ Story 27 remontée en v1 le 2026-10-12 ; 45-50 à la suite.
     effacé quand plus aucune image ne le désigne. Plus tard : compter les références
     depuis les messages (counter par image) pour nettoyer les images orphelines.
 
+### Fichiers et dossiers
+
+Ajoutées le 2026-10-12 (51-53), dans la continuité des images (§ Images).
+
+51. En tant qu'utilisateur, je veux envoyer un fichier de **n'importe quel type**, de la
+    même façon qu'une image (bouton, Ctrl+V, glisser-déposer, à sa place dans le
+    texte) ; il s'affiche comme une carte (icône, nom, taille, bouton de
+    téléchargement) et se partage par son lien in-app (story 46).
+    **Décisions** : même chemin que les images (`/media/{id}`, quota par personne,
+    déduplication, suppression ici / pour tout le monde). Le serveur ne refuse aucun
+    type : ce qui est une image propre (story 47) s'affiche dans le fil, tout le reste
+    est un fichier — **toujours servi en téléchargement** (`Content-Disposition:
+    attachment`, `application/octet-stream`, `nosniff`), jamais interprété par le
+    navigateur. Le nom est fourni par le client et assaini (pas de `/`, pas de
+    caractère de contrôle, 255 caractères max). Les métadonnées (nom, taille, type)
+    se lisent par le WebSocket (`GetMedia`) sans télécharger le fichier.
+52. En tant qu'utilisateur, je veux envoyer un **dossier** entier (bouton ou
+    glisser-déposer) : il est compressé en **ZIP** dans mon navigateur puis envoyé
+    comme un seul fichier ; sa carte montre son nom, le nombre de fichiers, la taille
+    d'origine et la taille compressée.
+    **Décisions** : ZIP (s'ouvre partout sans rien installer) produit par fflate dans
+    des workers ; les fichiers déjà compressés (images, vidéos, archives…) sont
+    stockés tels quels. Progression affichée pendant la compression et l'envoi.
+    Limite connue v1 : l'archive est construite entièrement avant l'envoi (HTTP/1.1
+    n'a pas d'envoi en flux depuis le navigateur) — un dossier de plusieurs Go pèse
+    sur la mémoire du navigateur.
+53. En tant qu'utilisateur, je veux télécharger un gros fichier (plusieurs Go) avec le
+    gestionnaire de téléchargement de mon navigateur, sans qu'il passe par la mémoire
+    de l'app.
+    **Décisions** : l'app demande un **ticket** (`RequestDownload`, UUID aléatoire
+    gardé 60 s par le TTL natif d'OxidArt) et le navigateur télécharge
+    `/media/{id}?ticket=…` directement. Le lien partagé reste réservé à l'app : sans
+    ticket valide (ou session en `Authorization`), rien ne sort.
+    **Plus tard** : reprise d'un téléchargement interrompu (requêtes `Range`) et
+    vérification de ce qui a déjà été téléchargé par checksum (le serveur connaît déjà
+    le SHA-256 de chaque fichier).
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.

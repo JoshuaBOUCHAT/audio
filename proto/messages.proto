@@ -86,8 +86,17 @@ message Media {
   uint32 height = 5;
   uint64 owner_id = 6;  // seul à pouvoir la supprimer pour tout le monde (story 50)
   uint64 created_at = 7; // ms epoch
+  // Story 51 : nom du fichier (assaini par le serveur). Un fichier qui n'est pas une
+  // image propre a mime = application/octet-stream et width = height = 0.
+  string name = 8;
+  // Story 52 : dossier compressé en ZIP par le client — nombre de fichiers et taille
+  // d'origine, déclarés par le client (informatifs). 0 = pas un dossier.
+  uint32 folder_files = 9;
+  uint64 folder_size = 10;
 }
 
+// En-têtes de `POST /media` (story 51-52) : `X-Media-Name` (nom encodé en
+// pourcentage), `X-Folder-Files` et `X-Folder-Size` pour un dossier.
 // Corps de la réponse HTTP 201 à `POST /media` (story 48 : quota après l'envoi ;
 // quota_total 0 = illimité). Les erreurs HTTP portent un `Error` en corps.
 message MediaUploaded {
@@ -117,6 +126,8 @@ message ClientEnvelope {
     OpenDm            open_dm            = 13; // story 28
     SetBio            set_bio            = 14; // story 43
     DeleteMedia       delete_media       = 15; // story 50
+    GetMedia          get_media          = 16; // story 51
+    RequestDownload   request_download   = 17; // story 53
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -192,6 +203,17 @@ message DeleteMedia {
   string media_id = 1;
 }
 
+// Story 51 : métadonnées de plusieurs médias sans les télécharger. Réponse :
+// MediaInfo (les ids inconnus ou supprimés en sont absents).
+message GetMedia {
+  repeated string media_ids = 1;
+}
+
+// Story 53 : ticket de téléchargement natif (60 s). Réponse : DownloadTicket.
+message RequestDownload {
+  string media_id = 1;
+}
+
 // Réponse : StatusSet. Passer invisible annonce « hors ligne » aux autres tout de
 // suite (story 41).
 message SetStatus {
@@ -238,6 +260,8 @@ message ServerEnvelope {
     PresenceChanged presence_changed  = 13;
     DmOpened        dm_opened         = 14;
     MediaDeleted    media_deleted     = 15;
+    MediaInfo       media_info        = 16;
+    DownloadTicket  download_ticket   = 17;
   }
 }
 
@@ -317,6 +341,16 @@ message PresenceChanged {
 // affiche « image supprimée ». Diffusé à tous (l'id, aléatoire, ne révèle rien).
 message MediaDeleted {
   string media_id = 1;
+}
+
+message MediaInfo {
+  repeated Media media = 1;
+}
+
+// Story 53 : `GET /media/{media_id}?ticket={ticket}`, valable 60 s.
+message DownloadTicket {
+  string media_id = 1;
+  string ticket = 2;
 }
 
 message Avatar {

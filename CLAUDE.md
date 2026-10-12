@@ -155,7 +155,8 @@ Opérations messages v1 :
   de « en train d'écrire » ni de statut absent.
 - Images (stories 27, 45-50, remontées en v1 le 2026-10-12) : une image est un lien
   `/media/{id}` dans le texte du message, fichiers sur disque par SHA-256, quota par
-  personne, HTTP sur le même port. Autres pièces jointes (fichiers quelconques) : non.
+  personne, HTTP sur le même port. Fichiers de tout type et dossiers compressés en ZIP
+  (stories 51-53), téléchargés par ticket.
 
 Création de salon : **admin uniquement** (pas de rôles/permissions granulaires — c'est
 la seule distinction de privilège qui existe dans tout le système avec le bootstrap
@@ -227,5 +228,5 @@ rustls-acme supporte TLS-ALPN-01 nativement.
 ## Hors scope (voir architecture.md pour la liste complète)
 
 Modération/rôles/permissions granulaires, notifications push, recherche full-text,
-multi-serveur/fédération, HTTP/3, réactions/emojis custom, pièces jointes autres qu'images (v1),
-« en train d'écrire » (v1), rate limiting métier (v1).
+multi-serveur/fédération, HTTP/3, réactions/emojis custom, « en train d'écrire » (v1),
+rate limiting métier (v1).
