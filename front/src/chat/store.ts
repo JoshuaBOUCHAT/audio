@@ -22,6 +22,7 @@ import {
   sendMessage,
   setAvatar,
   setBio,
+  setTheme,
   setPseudo,
   setStatus,
   syncRequest,
@@ -32,8 +33,10 @@ import {
   isTextChannel,
   mergeMessages,
   toChannel,
+  fromThemeChoice,
   toConversation,
   toMediaInfo,
+  toThemeChoice,
   toMe,
   toMessage,
   toNumber,
@@ -45,6 +48,7 @@ import {
   type MediaInfo,
   type Profile,
 } from "./model"
+import { applyTheme, type ThemeChoice } from "@/lib/theme"
 import { chat } from "@/proto/messages.js"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
 
@@ -253,6 +257,8 @@ export class ChatStore {
     const me = toMe(auth.me)
     const users: Record<number, Profile> = {}
     for (const p of auth.users ?? []) users[toNumber(p.id)] = toProfile(p)
+    // Story 55 : le thème du compte l'emporte sur la copie locale (autre appareil).
+    applyTheme(me.theme)
     const channels = (auth.channels ?? []).filter(isTextChannel).map(toChannel)
     const dms = (auth.dms ?? []).map((c) => toConversation(c, me.id))
 
@@ -530,6 +536,15 @@ export class ChatStore {
     this.setMedia(id, { status: "missing" })
   }
 
+  /** Story 55 : appliqué tout de suite, mémorisé avec le compte, poussé à mes autres appareils. */
+  setTheme = async (theme: ThemeChoice): Promise<void> => {
+    const me = this.state.me
+    if (!me) return
+    applyTheme(theme)
+    this.set({ me: { ...me, theme } })
+    await this.request(setTheme(fromThemeChoice(theme)))
+  }
+
   /** Story 41 : appliqué tout de suite côté serveur (pas de délai, story 42). */
   setInvisible = async (invisible: boolean): Promise<void> => {
     const response = await this.request(setStatus(invisible ? chat.Status.INVISIBLE : chat.Status.ONLINE))
@@ -627,6 +642,15 @@ export class ChatStore {
       case "messageDeleted": {
         const d = envelope.messageDeleted
         if (d) this.markDeleted(toNumber(d.channelId), toNumber(d.messageId))
+        break
+      }
+      case "themeSet": {
+        // Changé depuis un autre onglet ou appareil.
+        const me = this.state.me
+        if (!me || !envelope.themeSet) break
+        const theme = toThemeChoice(envelope.themeSet.theme)
+        applyTheme(theme)
+        this.set({ me: { ...me, theme } })
         break
       }
       case "mediaDeleted":

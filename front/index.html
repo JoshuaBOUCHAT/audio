@@ -1,7 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
   <head>
     <meta charset="UTF-8" />
+    <!-- Story 55 : thème appliqué avant le premier rendu (même logique et même clé que
+         src/lib/theme.ts), sans attendre le chargement de l'app. -->
+    <script>
+      try {
+        var t = localStorage.getItem("audio.theme")
+        var dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
+        if (dark) document.documentElement.classList.add("dark")
+        document.documentElement.style.colorScheme = dark ? "dark" : "light"
+      } catch (e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>front</title>

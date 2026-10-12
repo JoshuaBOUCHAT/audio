@@ -48,6 +48,11 @@ export function openDm(userId: number): ClientEnvelopeShape {
   return { payload: "openDm", openDm: { userId } };
 }
 
+/** Story 55 : thème mémorisé avec le compte. */
+export function setTheme(theme: chat.Theme): ClientEnvelopeShape {
+  return { payload: "setTheme", setTheme: { theme } };
+}
+
 /** Story 41 : En ligne ou Invisible (mémorisé avec le compte). */
 export function setStatus(status: chat.Status): ClientEnvelopeShape {
   return { payload: "setStatus", setStatus: { status } };

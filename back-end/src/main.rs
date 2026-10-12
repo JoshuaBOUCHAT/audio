@@ -358,6 +358,16 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SetTheme(req)) => match set_theme(req, state, *user_id) {
+            Ok(theme) => {
+                let set = proto::server_envelope::Payload::ThemeSet(proto::ThemeSet { theme: theme as i32 });
+                // Story 55 : mes autres onglets/appareils basculent aussi, personne d'autre.
+                let me = user_id.expect("set_theme exige l'auth");
+                registry::send_to_users(&state.registry, &[me], Some(conn), &event(set.clone()));
+                set
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         Some(Payload::SetPseudo(req)) => match set_pseudo(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -560,6 +570,7 @@ fn handle_auth(
                     avatar_version: 0,
                     status: proto::Status::Online as i32,
                     bio: String::new(),
+                    theme: proto::Theme::System as i32,
                 };
                 save_user(&mut art, &user);
                 art.set(
@@ -713,6 +724,25 @@ fn set_status(
     save_user(&mut art, &user);
     state.dirty.set(true);
     Ok(status)
+}
+
+/// Story 55 : thème mémorisé avec le compte ; un numéro inconnu est refusé.
+fn set_theme(
+    req: proto::SetTheme,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Theme, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let theme = proto::Theme::try_from(req.theme).map_err(|_| proto::Error {
+        code: 400,
+        message: "thème inconnu".to_string(),
+    })?;
+    let mut art = state.art.borrow_mut();
+    let mut user = load_user(&mut art, user_id);
+    user.set_theme(theme);
+    save_user(&mut art, &user);
+    state.dirty.set(true);
+    Ok(theme)
 }
 
 /// Au plus autant d'ids par `GetMedia` : un salon affiche rarement plus de médias

@@ -3,9 +3,10 @@
 // (`ChannelFeed`), membres à droite (story 23, carte de profil au clic, story 44).
 
 import { useEffect, useState } from "react"
-import { AtSign, Hash, LogOut, MessageCircle, Plus, Users } from "lucide-react"
+import { AtSign, Hash, LogOut, MessageCircle, Moon, Plus, Sun, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { resolvedTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import { PresenceAvatar } from "./Avatar"
 import { MembersPanel } from "./MembersPanel"
@@ -130,6 +131,14 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
               {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
             </span>
           </button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => void store.setTheme(resolvedTheme(me.theme) === "dark" ? "light" : "dark")}
+            title={resolvedTheme(me.theme) === "dark" ? "Passer en clair" : "Passer en sombre"}
+          >
+            {resolvedTheme(me.theme) === "dark" ? <Sun /> : <Moon />}
+          </Button>
           <Button variant="ghost" size="icon-sm" onClick={store.logout} title="Se déconnecter">
             <LogOut />
           </Button>

@@ -1,7 +1,7 @@
 // Stories 35 et 37 : changer son pseudo, définir/changer/retirer sa photo.
 
 import { useRef, useState } from "react"
-import { X } from "lucide-react"
+import { Monitor, Moon, Sun, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,13 @@ import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
 import { toAvatarBytes } from "./avatar-image"
 import type { ChatState, ChatStore } from "./store"
+
+/** Story 55. */
+const THEMES = [
+  { value: "system", label: "Système", Icon: Monitor },
+  { value: "light", label: "Clair", Icon: Sun },
+  { value: "dark", label: "Sombre", Icon: Moon },
+] as const
 
 /** Story 43, même borne que le serveur (`validate::MAX_BIO_CHARS`). */
 const MAX_BIO_CHARS = 190
@@ -83,6 +90,26 @@ export function ProfilePanel({
                   }
                 }}
               />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">Thème</span>
+            <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Thème">
+              {THEMES.map(({ value, label, Icon }) => (
+                <Button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={me.theme === value}
+                  variant={me.theme === value ? "secondary" : "ghost"}
+                  className={cn(me.theme === value && "ring-1 ring-border")}
+                  onClick={() => void store.setTheme(value)}
+                >
+                  <Icon />
+                  {label}
+                </Button>
+              ))}
             </div>
           </div>
 

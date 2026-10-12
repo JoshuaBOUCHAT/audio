@@ -3,6 +3,7 @@
 // — sans perte, les ids serveur tiennent sur 36 bits (back-end/src/keys.rs).
 
 import type Long from "long"
+import type { ThemeChoice } from "@/lib/theme"
 import { chat } from "@/proto/messages.js"
 
 export type Me = {
@@ -15,6 +16,8 @@ export type Me = {
   invisible: boolean
   /** Story 43 : description, vide = aucune. */
   bio: string
+  /** Story 55 : thème choisi, mémorisé avec le compte. */
+  theme: ThemeChoice
 }
 /** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
 export type Profile = { id: number; pseudo: string; avatarVersion: number; bio: string }
@@ -53,7 +56,22 @@ export function toMe(user: chat.IUser | null | undefined): Me {
     avatarVersion: toNumber(user?.avatarVersion),
     invisible: user?.status === chat.Status.INVISIBLE,
     bio: user?.bio ?? "",
+    theme: toThemeChoice(user?.theme),
   }
+}
+
+const THEMES: Record<chat.Theme, ThemeChoice> = {
+  [chat.Theme.SYSTEM]: "system",
+  [chat.Theme.LIGHT]: "light",
+  [chat.Theme.DARK]: "dark",
+}
+
+export function toThemeChoice(theme: chat.Theme | null | undefined): ThemeChoice {
+  return THEMES[theme ?? chat.Theme.SYSTEM] ?? "system"
+}
+
+export function fromThemeChoice(choice: ThemeChoice): chat.Theme {
+  return choice === "light" ? chat.Theme.LIGHT : choice === "dark" ? chat.Theme.DARK : chat.Theme.SYSTEM
 }
 
 export function toProfile(profile: chat.IUserProfile): Profile {
