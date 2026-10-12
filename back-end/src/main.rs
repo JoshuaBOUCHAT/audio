@@ -591,14 +591,8 @@ fn require_pseudo(art: &mut OxidArt, user_id: u64) -> Result<proto::User, proto:
     Ok(user)
 }
 
-/// Clés OxidArt ASCII uniquement : le pseudo en minuscules est encodé en hex de son
-/// UTF-8 (`Léa` → `pseudo_index:6cc3a961`).
 fn pseudo_index_key(pseudo: &str) -> String {
-    let mut key = String::from("pseudo_index:");
-    for b in pseudo.to_lowercase().bytes() {
-        key.push_str(&format!("{b:02x}"));
-    }
-    key
+    format!("pseudo_index:{}", pseudo.to_lowercase())
 }
 
 /// Stories 34-35 : choix ou changement de pseudo, unique casse ignorée via
@@ -1011,4 +1005,21 @@ fn compute_accept(key: &str) -> String {
     data.push_str(WS_GUID);
     let hash = digest(&SHA1_FOR_LEGACY_USE_ONLY, data.as_bytes());
     BASE64.encode(hash.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pseudo accentué en clé brute : oxidart accepte les clés binaires (radixox
+    /// 9a3fd6c), plus besoin d'encoder l'index.
+    #[test]
+    fn pseudo_index_accentue() {
+        let mut art = OxidArt::new();
+        let key = pseudo_index_key("LÉA");
+        assert_eq!(key, "pseudo_index:léa");
+        art.set(SharedByte::from_str(&key), Value::String(SharedByte::from_str("7")));
+        assert!(art.get(pseudo_index_key("Léa").as_bytes()).is_some());
+        assert!(art.get(pseudo_index_key("Lea").as_bytes()).is_none());
+    }
 }

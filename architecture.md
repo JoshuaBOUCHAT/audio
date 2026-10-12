@@ -137,7 +137,7 @@ borné au nombre d'entrées demandées.
 |---|---|---|
 | `user:{id}` | `User` (bincode) | `id` = compteur global |
 | `email_index:{email}` | `user_id` (u64) | résout un email vers un compte existant |
-| `pseudo_index:{hex(UTF-8 du pseudo en minuscules)}` | `user_id` (u64) | unicité du pseudo casse ignorée (stories 34-35) ; supprimée/réécrite à chaque changement |
+| `pseudo_index:{pseudo en minuscules}` | `user_id` (u64) | unicité du pseudo casse ignorée (stories 34-35) ; supprimée/réécrite à chaque changement |
 | `avatar:{user_id}` | image (PNG/JPEG/WebP, ≤ 256 Kio) | photo de profil (story 37) ; sa version vit dans `User.avatar_version` |
 | `magiclink:{token}` | `email` (string) | **TTL courte** via `set_ttl` — expire seule, zéro code de nettoyage |
 | `session:{token}` | `user_id` (u64) | pas de TTL en v1 — révocation = `del` explicite (non implémenté v1) |
