@@ -17,6 +17,8 @@ export type Me = {
 /** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
 export type Profile = { id: number; pseudo: string; avatarVersion: number }
 export type ChatChannel = { id: number; name: string }
+/** Conversation privée (stories 28-30), vue depuis `me`. */
+export type Conversation = { id: number; otherId: number; lastMessageId: number }
 export type ChatMessage = {
   id: number
   channelId: number
@@ -61,6 +63,23 @@ export function isTextChannel(channel: chat.IChannel): boolean {
 
 export function toChannel(channel: chat.IChannel): ChatChannel {
   return { id: toNumber(channel.id), name: channel.name ?? "" }
+}
+
+export function toConversation(conversation: chat.IConversation, meId: number): Conversation {
+  const ids = (conversation.channel?.participantIds ?? []).map(toNumber)
+  return {
+    id: toNumber(conversation.channel?.id),
+    otherId: ids.find((id) => id !== meId) ?? 0,
+    lastMessageId: toNumber(conversation.lastMessageId),
+  }
+}
+
+/**
+ * Story 30 : dernière activité d'abord. Les ids viennent du compteur global, donc le
+ * plus grand de (dernier message, création du DM) date la conversation.
+ */
+export function byLastActivity(a: Conversation, b: Conversation): number {
+  return Math.max(b.lastMessageId, b.id) - Math.max(a.lastMessageId, a.id)
 }
 
 export function toMessage(message: chat.IMessage): ChatMessage {

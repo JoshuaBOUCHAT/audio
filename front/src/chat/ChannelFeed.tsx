@@ -1,7 +1,7 @@
-// Fil d'un salon : messages (stories 10-14, 36), réponse à un message avec saut vers
+// Fil d'un salon ou d'un DM (même interface, stories 30-31) : messages (stories 10-14, 36), réponse à un message avec saut vers
 // l'original (story 39), modification dans la barre de saisie (story 40), suppression
-// confirmée (story 38). Monté avec `key={channelId}` : changer de salon remet à zéro
-// le mode de saisie et le brouillon.
+// confirmée (story 38). Monté avec `key={conversationId}` : changer de conversation
+// remet à zéro le mode de saisie et le brouillon.
 
 import { useEffect, useRef, useState } from "react"
 import { CornerUpRight, Pencil, Reply, Trash2, X } from "lucide-react"
@@ -10,7 +10,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
-import type { ChatChannel, ChatMessage } from "./model"
+import type { ChatMessage } from "./model"
 import type { ChatState, ChatStore } from "./store"
 
 type Mode =
@@ -19,16 +19,22 @@ type Mode =
   | { kind: "edit"; target: ChatMessage; draft: string } // `draft` : saisie en cours avant la modification, restaurée ensuite
 
 export function ChannelFeed({
-  channel,
+  conversationId,
+  label,
+  isDm = false,
   state,
   store,
 }: {
-  channel: ChatChannel
+  conversationId: number
+  /** `#salon` ou `@pseudo`, pour la barre de saisie. */
+  label: string
+  /** Story 32 : dans un DM, l'admin ne supprime pas les messages de l'autre. */
+  isDm?: boolean
   state: ChatState
   store: ChatStore
 }) {
   const me = state.me!
-  const messages = state.messages[channel.id]
+  const messages = state.messages[conversationId]
   const [mode, setMode] = useState<Mode>({ kind: "new" })
   const [content, setContent] = useState("")
   const [confirmDelete, setConfirmDelete] = useState<ChatMessage | null>(null)
@@ -75,14 +81,14 @@ export function ChannelFeed({
     if (!text) return
     if (mode.kind === "edit") {
       // Contenu inchangé : rien à envoyer, on sort simplement du mode modification.
-      if (text === mode.target.content.trim() || (await store.edit(channel.id, mode.target.id, text))) {
+      if (text === mode.target.content.trim() || (await store.edit(conversationId, mode.target.id, text))) {
         setContent(mode.draft)
         setMode({ kind: "new" })
       }
       return
     }
     // Vidé seulement si le serveur a accepté : un échec garde le texte à renvoyer.
-    if (await store.send(channel.id, text, mode.kind === "reply" ? mode.target.id : 0)) {
+    if (await store.send(conversationId, text, mode.kind === "reply" ? mode.target.id : 0)) {
       setContent("")
       setMode({ kind: "new" })
     }
@@ -167,7 +173,7 @@ export function ChannelFeed({
                         <Pencil />
                       </Button>
                     )}
-                    {(isMine || me.isAdmin) && (
+                    {(isMine || (me.isAdmin && !isDm)) && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -239,7 +245,7 @@ export function ChannelFeed({
               }
             }
           }}
-          placeholder={mode.kind === "edit" ? "Nouveau contenu du message" : `Message #${channel.name}`}
+          placeholder={mode.kind === "edit" ? "Nouveau contenu du message" : `Message ${label}`}
           disabled={state.phase !== "ready"}
           className={cn(
             mode.kind !== "new" && "rounded-t-none",

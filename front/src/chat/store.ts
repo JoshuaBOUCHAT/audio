@@ -13,6 +13,7 @@ import {
   createChannel,
   deleteMessage,
   editMessage,
+  openDm,
   getAvatar,
   requestMagicLink,
   sendMessage,
@@ -27,12 +28,14 @@ import {
   isTextChannel,
   mergeMessages,
   toChannel,
+  toConversation,
   toMe,
   toMessage,
   toNumber,
   toProfile,
   type ChatChannel,
   type ChatMessage,
+  type Conversation,
   type Me,
   type Profile,
 } from "./model"
@@ -51,6 +54,8 @@ export type ChatState = {
   phase: Phase
   me: Me | null
   channels: ChatChannel[]
+  /** Stories 28-30 : mes conversations privées (non triées, cf. `byLastActivity`). */
+  dms: Conversation[]
   /** Profils publics par id (story 36), `me` compris. */
   users: Record<number, Profile>
   /** Story 23 : ids vus en ligne par les autres (délais et invisibles appliqués par le serveur). */
@@ -69,6 +74,7 @@ const INITIAL: ChatState = {
   phase: "connecting",
   me: null,
   channels: [],
+  dms: [],
   users: {},
   online: new Set(),
   avatars: {},
@@ -220,6 +226,7 @@ export class ChatStore {
     const users: Record<number, Profile> = {}
     for (const p of auth.users ?? []) users[toNumber(p.id)] = toProfile(p)
     const channels = (auth.channels ?? []).filter(isTextChannel).map(toChannel)
+    const dms = (auth.dms ?? []).map((c) => toConversation(c, me.id))
 
     // Tout ce qui précède cette auth est périmé : le serveur a pu redémarrer sur une
     // autre base, où les mêmes ids (compteur global) désignent d'autres salons,
@@ -228,8 +235,8 @@ export class ChatStore {
     const sameAccount = this.state.me?.id === me.id
     const kept: Record<number, ChatMessage[]> = {}
     if (sameAccount) {
-      for (const c of channels) {
-        if (this.state.messages[c.id]) kept[c.id] = this.state.messages[c.id]
+      for (const { id } of [...channels, ...dms]) {
+        if (this.state.messages[id]) kept[id] = this.state.messages[id]
       }
     }
     // Les versions de photo viennent du même compteur : cache vidé, rechargé à la demande.
@@ -241,6 +248,7 @@ export class ChatStore {
       me,
       users,
       channels,
+      dms,
       online: new Set((auth.onlineUserIds ?? []).map(toNumber)),
       messages: kept,
       avatars: {},
@@ -281,6 +289,7 @@ export class ChatStore {
     const message = response?.newMessage?.message
     if (!message) return false
     this.addMessage(toMessage(message))
+    this.bumpDm(toMessage(message))
     return true
   }
 
@@ -314,6 +323,30 @@ export class ChatStore {
     if (!profile) return false
     this.applyProfile(toProfile(profile))
     return true
+  }
+
+  /**
+   * Story 28 : DM avec `userId` (l'existant ou un nouveau). Rend son id, pour basculer
+   * dessus ; `null` si refusé (erreur dans `error`).
+   */
+  openDm = async (userId: number): Promise<number | null> => {
+    const response = await this.request(openDm(userId))
+    const conversation = response?.dmOpened?.conversation
+    if (!conversation || !this.state.me) return null
+    const dm = toConversation(conversation, this.state.me.id)
+    this.upsertDm(dm)
+    return dm.id
+  }
+
+  private upsertDm(dm: Conversation): void {
+    const others = this.state.dms.filter((d) => d.id !== dm.id)
+    this.set({ dms: [...others, dm] })
+  }
+
+  /** Story 30 : un message dans un DM le remonte, qu'il soit chargé ou non. */
+  private bumpDm(message: ChatMessage): void {
+    const dm = this.state.dms.find((d) => d.id === message.channelId)
+    if (dm && message.id > dm.lastMessageId) this.upsertDm({ ...dm, lastMessageId: message.id })
   }
 
   /** Story 41 : appliqué tout de suite côté serveur (pas de délai, story 42). */
@@ -384,8 +417,18 @@ export class ChatStore {
   private onEvent(envelope: ServerEnvelope): void {
     switch (envelope.payload) {
       case "newMessage":
-        if (envelope.newMessage?.message) this.addMessage(toMessage(envelope.newMessage.message))
+        if (envelope.newMessage?.message) {
+          const message = toMessage(envelope.newMessage.message)
+          this.addMessage(message)
+          this.bumpDm(message)
+        }
         break
+      case "dmOpened": {
+        // Premier message d'un DM ouvert par l'autre, ou DM ouvert dans un autre onglet.
+        const conversation = envelope.dmOpened?.conversation
+        if (conversation && this.state.me) this.upsertDm(toConversation(conversation, this.state.me.id))
+        break
+      }
       case "messageEdited":
         // Même id : `mergeMessages` remplace la version précédente.
         if (envelope.messageEdited?.message) this.addMessage(toMessage(envelope.messageEdited.message))

@@ -1,60 +1,122 @@
-// Vue principale : liste des salons (création si admin, story 7) + fil du salon
-// sélectionné (`ChannelFeed`).
+// Vue principale : colonne de gauche qui bascule entre salons (création si admin,
+// story 7) et conversations privées (stories 28-30), fil de la conversation choisie
+// (`ChannelFeed`), membres à droite (story 23, ouverture d'un DM au clic).
 
 import { useEffect, useState } from "react"
-import { Hash, LogOut, Plus, Users } from "lucide-react"
+import { AtSign, Hash, LogOut, MessageCircle, Plus, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { PresenceAvatar } from "./Avatar"
 import { MembersPanel } from "./MembersPanel"
 import { ChannelFeed } from "./ChannelFeed"
+import { byLastActivity } from "./model"
 import { ProfilePanel } from "./ProfilePanel"
 import type { ChatState, ChatStore } from "./store"
 
+type View = "channels" | "dms"
+
 export function ChatView({ state, store }: { state: ChatState; store: ChatStore }) {
-  const [selected, setSelected] = useState<number | null>(null)
+  const [view, setView] = useState<View>("channels")
+  const [selectedChannel, setSelectedChannel] = useState<number | null>(null)
+  const [selectedDm, setSelectedDm] = useState<number | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
   const [membersOpen, setMembersOpen] = useState(true)
   const me = state.me!
-  // Salon affiché : le choix de l'utilisateur s'il existe encore, sinon le premier.
-  const channelId = state.channels.some((c) => c.id === selected)
-    ? selected
-    : (state.channels[0]?.id ?? null)
-  const channel = state.channels.find((c) => c.id === channelId)
+  const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
+
+  // Choix de l'utilisateur s'il existe encore, sinon le premier de la liste.
+  const dms = [...state.dms].sort(byLastActivity)
+  const channel =
+    state.channels.find((c) => c.id === selectedChannel) ?? state.channels[0] ?? null
+  const dm = dms.find((d) => d.id === selectedDm) ?? dms[0] ?? null
+  const currentId = view === "channels" ? channel?.id : dm?.id
 
   useEffect(() => {
-    if (channelId !== null) store.open(channelId)
-  }, [channelId, store])
+    if (currentId !== undefined) store.open(currentId)
+  }, [currentId, store])
+
+  // Story 28 : ouvrir un DM depuis la liste des membres bascule dessus.
+  async function messageUser(userId: number) {
+    const id = await store.openDm(userId)
+    if (id === null) return
+    setSelectedDm(id)
+    setView("dms")
+  }
 
   return (
     <div className="flex h-svh">
       <aside className="relative flex w-60 shrink-0 flex-col border-r bg-muted/40">
-        <div className="flex h-12 items-center justify-between border-b px-3">
-          <span className="font-semibold">Salons</span>
-          {me.isAdmin && <CreateChannel store={store} />}
+        <div className="flex h-12 items-center gap-1 border-b px-2">
+          <div className="flex flex-1 rounded-lg bg-muted p-0.5" role="tablist">
+            {(["channels", "dms"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1 text-sm text-muted-foreground",
+                  view === v && "bg-background font-medium text-foreground shadow-sm",
+                )}
+              >
+                {v === "channels" ? <Hash className="size-3.5" /> : <MessageCircle className="size-3.5" />}
+                {v === "channels" ? "Salons" : "Privé"}
+              </button>
+            ))}
+          </div>
+          {view === "channels" && me.isAdmin && <CreateChannel store={store} />}
         </div>
+
         <nav className="flex-1 overflow-y-auto p-2">
-          {state.channels.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setSelected(c.id)}
-              className={cn(
-                "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
-                c.id === channelId && "bg-muted font-medium text-foreground",
+          {view === "channels" ? (
+            <>
+              {state.channels.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setSelectedChannel(c.id)}
+                  className={cn(
+                    "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                    c.id === channel?.id && "bg-muted font-medium text-foreground",
+                  )}
+                >
+                  <Hash className="size-4 shrink-0" />
+                  <span className="truncate">{c.name}</span>
+                </button>
+              ))}
+              {state.channels.length === 0 && (
+                <p className="px-2 text-sm text-muted-foreground">
+                  {me.isAdmin ? "Aucun salon : crée le premier avec +." : "Aucun salon pour l'instant."}
+                </p>
               )}
-            >
-              <Hash className="size-4 shrink-0" />
-              <span className="truncate">{c.name}</span>
-            </button>
-          ))}
-          {state.channels.length === 0 && (
-            <p className="px-2 text-sm text-muted-foreground">
-              {me.isAdmin ? "Aucun salon : crée le premier avec +." : "Aucun salon pour l'instant."}
-            </p>
+            </>
+          ) : (
+            <>
+              {dms.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setSelectedDm(d.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                    d.id === dm?.id && "bg-muted font-medium text-foreground",
+                  )}
+                >
+                  <PresenceAvatar userId={d.otherId} state={state} store={store} className="size-8" />
+                  <span className="truncate">{pseudoOf(d.otherId)}</span>
+                </button>
+              ))}
+              {dms.length === 0 && (
+                <p className="px-2 text-sm text-muted-foreground">
+                  Aucune conversation privée. Clique sur un membre à droite pour lui écrire.
+                </p>
+              )}
+            </>
           )}
         </nav>
+
         <div className="flex items-center gap-1 border-t p-2">
           <button
             type="button"
@@ -76,10 +138,16 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-1.5 border-b px-4">
-          {channel && (
+          {view === "channels" && channel && (
             <>
               <Hash className="size-4 text-muted-foreground" />
               <span className="font-semibold">{channel.name}</span>
+            </>
+          )}
+          {view === "dms" && dm && (
+            <>
+              <AtSign className="size-4 text-muted-foreground" />
+              <span className="font-semibold">{pseudoOf(dm.otherId)}</span>
             </>
           )}
           <div className="ml-auto flex items-center gap-2">
@@ -105,18 +173,20 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
           </div>
         )}
 
-        {channel ? (
-          <ChannelFeed key={channel.id} channel={channel} state={state} store={store} />
+        {view === "channels" && channel ? (
+          <ChannelFeed key={channel.id} conversationId={channel.id} label={`#${channel.name}`} state={state} store={store} />
+        ) : view === "dms" && dm ? (
+          <ChannelFeed key={dm.id} conversationId={dm.id} label={`@${pseudoOf(dm.otherId)}`} isDm state={state} store={store} />
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            Aucun salon sélectionné.
+            {view === "channels" ? "Aucun salon sélectionné." : "Aucune conversation sélectionnée."}
           </div>
         )}
       </main>
 
       {membersOpen && (
         <div className="hidden lg:flex">
-          <MembersPanel state={state} store={store} />
+          <MembersPanel state={state} store={store} onMessage={(id) => void messageUser(id)} />
         </div>
       )}
 
