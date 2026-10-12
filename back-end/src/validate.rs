@@ -81,3 +81,106 @@ pub fn validate_send_message(raw: proto::SendMessage) -> Result<ValidSendMessage
         content: raw.content,
     })
 }
+
+pub const MAX_PSEUDO_CHARS: usize = 32;
+
+/// Stories 34-35 : pseudo trimé, 1 à 32 caractères, sans caractère de contrôle
+/// (retours à la ligne, etc. casseraient l'affichage). L'unicité, qui dépend de
+/// l'état, est vérifiée par `set_pseudo`.
+pub struct ValidSetPseudo {
+    pub pseudo: String,
+}
+
+pub fn validate_set_pseudo(raw: proto::SetPseudo) -> Result<ValidSetPseudo, proto::Error> {
+    let pseudo = raw.pseudo.trim();
+    let invalid = |message: &str| proto::Error {
+        code: 400,
+        message: message.to_string(),
+    };
+    if pseudo.is_empty() {
+        return Err(invalid("pseudo vide"));
+    }
+    if pseudo.chars().count() > MAX_PSEUDO_CHARS {
+        return Err(invalid("pseudo trop long (32 caractères max)"));
+    }
+    if pseudo.chars().any(char::is_control) {
+        return Err(invalid("pseudo avec caractère de contrôle"));
+    }
+    Ok(ValidSetPseudo {
+        pseudo: pseudo.to_string(),
+    })
+}
+
+/// Story 37 : seule limite de taille métier du système, la photo étant stockée dans
+/// OxidArt et persistée par le snapshot.
+pub const MAX_AVATAR_BYTES: usize = 256 * 1024;
+
+/// `image: None` = retirer la photo (`SetAvatar.image` vide).
+pub struct ValidSetAvatar {
+    pub image: Option<Vec<u8>>,
+}
+
+/// Story 37 : PNG, JPEG ou WebP reconnus à leurs octets magiques. Le client recadre et
+/// réduit avant l'envoi ; le serveur ne décode pas l'image, il refuse seulement ce qui
+/// n'en a pas la signature.
+pub fn validate_set_avatar(raw: proto::SetAvatar) -> Result<ValidSetAvatar, proto::Error> {
+    let image = raw.image;
+    if image.is_empty() {
+        return Ok(ValidSetAvatar { image: None });
+    }
+    if image.len() > MAX_AVATAR_BYTES {
+        return Err(proto::Error {
+            code: 400,
+            message: "photo trop lourde (256 Kio max)".to_string(),
+        });
+    }
+    let png = image.starts_with(b"\x89PNG\r\n\x1a\n");
+    let jpeg = image.starts_with(b"\xff\xd8\xff");
+    let webp = image.len() >= 12 && image.starts_with(b"RIFF") && &image[8..12] == b"WEBP";
+    if !(png || jpeg || webp) {
+        return Err(proto::Error {
+            code: 400,
+            message: "photo : PNG, JPEG ou WebP attendu".to_string(),
+        });
+    }
+    Ok(ValidSetAvatar { image: Some(image) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pseudo(raw: &str) -> Result<String, u32> {
+        validate_set_pseudo(proto::SetPseudo { pseudo: raw.to_string() })
+            .map(|v| v.pseudo)
+            .map_err(|e| e.code)
+    }
+
+    #[test]
+    fn pseudo_trime_et_borne() {
+        assert_eq!(pseudo("  Léa  "), Ok("Léa".to_string()));
+        assert_eq!(pseudo("   "), Err(400));
+        assert_eq!(pseudo(&"é".repeat(32)), Ok("é".repeat(32)));
+        assert_eq!(pseudo(&"é".repeat(33)), Err(400));
+        assert_eq!(pseudo("a\nb"), Err(400));
+    }
+
+    fn avatar(image: &[u8]) -> Result<bool, u32> {
+        validate_set_avatar(proto::SetAvatar { image: image.to_vec() })
+            .map(|v| v.image.is_some())
+            .map_err(|e| e.code)
+    }
+
+    #[test]
+    fn avatar_par_octets_magiques() {
+        assert_eq!(avatar(b""), Ok(false));
+        assert_eq!(avatar(b"\x89PNG\r\n\x1a\n...."), Ok(true));
+        assert_eq!(avatar(b"\xff\xd8\xff\xe0"), Ok(true));
+        assert_eq!(avatar(b"RIFF\0\0\0\0WEBPVP8 "), Ok(true));
+        assert_eq!(avatar(b"<svg onload=alert(1)>"), Err(400));
+        assert_eq!(avatar(b"RIFF\0\0\0\0WAVE"), Err(400));
+        let mut big = b"\xff\xd8\xff".to_vec();
+        big.resize(MAX_AVATAR_BYTES + 1, 0);
+        assert_eq!(avatar(&big), Err(400));
+    }
+}

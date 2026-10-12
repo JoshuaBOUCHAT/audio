@@ -80,9 +80,9 @@ vérifié** (pas d'outil navigateur dans la session) : premier point à faire.
 
 - Écoute sur `127.0.0.1:8443` avec un cert auto-signé (`back-end/certs/`) : pas
   encore d'ACME/TLS-ALPN-01 ni de port 443 public (le spike vit dans `spike-acme/`).
-- Requête HTTP d'upgrade lue en un seul `read` (4 Ko) ; frame WebSocket lue en un
-  seul `read` : pas de frame fragmentée ni de frame à cheval sur deux lectures, et
-  une frame non décodable ferme la connexion. Suffisant pour des messages courts,
-  à reprendre pour de gros messages.
+- Requête HTTP d'upgrade lue en un seul `read` (4 Ko).
+- Frames WebSocket (`ws.rs`) : accumulées sur plusieurs lectures, plusieurs par
+  lecture ; plafond de transport 1 Mio par frame ; messages fragmentés (FIN=0) non
+  gérés (les navigateurs n'en envoient pas). Une frame invalide ferme la connexion.
 - Ping/pong et frames texte ignorés ; pas de heartbeat (CLAUDE.md : non tranché).
 - Un crash (pas un arrêt propre) perd au plus les 10 dernières secondes.

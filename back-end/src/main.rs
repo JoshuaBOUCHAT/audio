@@ -4,6 +4,7 @@ mod persist;
 mod proto;
 mod registry;
 mod validate;
+mod ws;
 
 use std::cell::Cell;
 use std::env;
@@ -213,42 +214,54 @@ async fn handle_ws_connection(tls: TlsStream, state: AppState) {
     println!("[ws] connexion terminée");
 }
 
+/// Les octets lus s'accumulent dans `pending` jusqu'à former des frames complètes :
+/// une lecture peut porter une demi-frame (photo de profil de plusieurs records TLS)
+/// comme plusieurs frames. Une frame invalide ferme la connexion.
 async fn read_loop(mut read: OwnedReadHalf<TlsStream>, conn: ConnId, state: &AppState) {
-    let mut buf = vec![0u8; 4096];
+    let mut chunk = vec![0u8; 16 * 1024];
+    let mut pending: Vec<u8> = Vec::new();
     let mut user_id: Option<u64> = None;
     loop {
-        let (res, b) = read.read(buf).await;
-        buf = b;
-        let n = match res {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        let Some((opcode, payload)) = decode_ws_frame(&buf[..n]) else {
-            break;
-        };
-        match opcode {
-            0x8 => break, // close
-            0x2 => {
-                let envelope = match proto::ClientEnvelope::decode(payload.as_slice()) {
-                    Ok(envelope) => envelope,
-                    Err(e) => {
-                        eprintln!("[ws] ClientEnvelope illisible: {e:?}");
-                        continue;
-                    }
-                };
-                let Some(response) = handle_client_envelope(envelope, state, conn, &mut user_id)
-                else {
-                    continue;
-                };
-                registry::send(&state.registry, conn, &server_frame(&response));
+        loop {
+            let frame = match ws::parse_client_frame(&pending) {
+                Ok(Some(frame)) => frame,
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("[ws] frame refusée: {e:?}");
+                    return;
+                }
+            };
+            pending.drain(..frame.consumed);
+            match frame.opcode {
+                0x8 => return, // close
+                0x2 => handle_binary_frame(&frame.payload, state, conn, &mut user_id),
+                _ => {} // texte/ping/pong non gérés à ce stade
             }
-            _ => {} // texte/ping/pong non gérés à ce stade
+        }
+        let (res, c) = read.read(chunk).await;
+        chunk = c;
+        match res {
+            Ok(0) | Err(_) => return,
+            Ok(n) => pending.extend_from_slice(&chunk[..n]),
         }
     }
 }
 
+fn handle_binary_frame(payload: &[u8], state: &AppState, conn: ConnId, user_id: &mut Option<u64>) {
+    let envelope = match proto::ClientEnvelope::decode(payload) {
+        Ok(envelope) => envelope,
+        Err(e) => {
+            eprintln!("[ws] ClientEnvelope illisible: {e:?}");
+            return;
+        }
+    };
+    if let Some(response) = handle_client_envelope(envelope, state, conn, user_id) {
+        registry::send(&state.registry, conn, &server_frame(&response));
+    }
+}
+
 fn server_frame(envelope: &proto::ServerEnvelope) -> Vec<u8> {
-    encode_ws_frame(0x2, &envelope.encode_to_vec())
+    ws::encode_frame(0x2, &envelope.encode_to_vec())
 }
 
 fn handle_client_envelope(
@@ -340,6 +353,18 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SetPseudo(req)) => match set_pseudo(req, state, *user_id) {
+            Ok(profile) => user_updated(state, conn, profile),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::SetAvatar(req)) => match set_avatar(req, state, *user_id) {
+            Ok(profile) => user_updated(state, conn, profile),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::GetAvatar(req)) => match get_avatar(req, state, *user_id) {
+            Ok(avatar) => proto::server_envelope::Payload::Avatar(avatar),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         _ => {
             eprintln!("[ws] type de ClientEnvelope non géré");
             return None;
@@ -350,6 +375,24 @@ fn handle_client_envelope(
         request_id: envelope.request_id,
         payload: Some(payload),
     })
+}
+
+/// Stories 35-37 : le changement de profil est diffusé aux autres clients
+/// authentifiés ; l'auteur le reçoit en réponse.
+fn user_updated(
+    state: &AppState,
+    conn: ConnId,
+    profile: proto::UserProfile,
+) -> proto::server_envelope::Payload {
+    let updated = proto::server_envelope::Payload::UserUpdated(proto::UserUpdated {
+        profile: Some(profile),
+    });
+    let event = proto::ServerEnvelope {
+        request_id: String::new(),
+        payload: Some(updated.clone()),
+    };
+    registry::broadcast(&state.registry, conn, &server_frame(&event));
+    updated
 }
 
 /// `token` = token de lien magique OU token de session (story 33), le serveur ne
@@ -402,16 +445,15 @@ fn handle_auth(
                     .expect("id_counter jamais utilisé pour autre chose qu'un entier")
                     as u64;
                 let is_admin = state.bootstrap_admin_email.as_ref() == Some(&email);
+                // Pseudo vide : choisi ensuite par SetPseudo (story 34).
                 let user = proto::User {
                     id,
                     email: email.to_string(),
                     is_admin,
+                    pseudo: String::new(),
+                    avatar_version: 0,
                 };
-                let encoded = bincode::serialize(&user).expect("sérialisation User");
-                art.set(
-                    SharedByte::from_str(&format!("user:{id}")),
-                    Value::String(SharedByte::from_slice(encoded)),
-                );
+                save_user(&mut art, &user);
                 art.set(
                     SharedByte::from_str(&email_index_key),
                     Value::String(SharedByte::from_str(&id.to_string())),
@@ -442,10 +484,172 @@ fn handle_auth(
 
     user_id_slot.replace(user.id);
     let channels = list_channels(&art, user.id);
+    let users = list_profiles(&art);
     Ok(proto::AuthResponse {
         me: Some(user),
         channels,
         session_token: session_token.to_string(),
+        users,
+    })
+}
+
+fn save_user(art: &mut OxidArt, user: &proto::User) {
+    let encoded = bincode::serialize(user).expect("sérialisation User");
+    art.set(
+        SharedByte::from_str(&format!("user:{}", user.id)),
+        Value::String(SharedByte::from_slice(encoded)),
+    );
+}
+
+fn profile(user: &proto::User) -> proto::UserProfile {
+    proto::UserProfile {
+        id: user.id,
+        pseudo: user.pseudo.clone(),
+        avatar_version: user.avatar_version,
+    }
+}
+
+/// Story 36 : profils de tous les comptes qui ont choisi un pseudo (un compte sans
+/// pseudo n'a rien pu écrire, cf. `require_pseudo`, donc personne n'a à l'afficher).
+fn list_profiles(art: &OxidArt) -> Vec<proto::UserProfile> {
+    art.krange(b"user:", b"", usize::MAX, false)
+        .iter()
+        .map(|(_, val)| {
+            bincode::deserialize::<proto::User>(range_bytes(val, "user:{id}"))
+                .expect("user:{id} corrompu")
+        })
+        .filter(|u| !u.pseudo.is_empty())
+        .map(|u| profile(&u))
+        .collect()
+}
+
+/// Story 34 : aucune écriture (message, salon, suppression, photo) tant que le pseudo
+/// n'est pas choisi — tout auteur visible par les autres a un pseudo.
+fn require_pseudo(art: &mut OxidArt, user_id: u64) -> Result<proto::User, proto::Error> {
+    let user = load_user(art, user_id);
+    if user.pseudo.is_empty() {
+        return Err(proto::Error {
+            code: 403,
+            message: "choisis d'abord un pseudo".to_string(),
+        });
+    }
+    Ok(user)
+}
+
+/// Clés OxidArt ASCII uniquement : le pseudo en minuscules est encodé en hex de son
+/// UTF-8 (`Léa` → `pseudo_index:6cc3a961`).
+fn pseudo_index_key(pseudo: &str) -> String {
+    let mut key = String::from("pseudo_index:");
+    for b in pseudo.to_lowercase().bytes() {
+        key.push_str(&format!("{b:02x}"));
+    }
+    key
+}
+
+/// Stories 34-35 : choix ou changement de pseudo, unique casse ignorée via
+/// `pseudo_index:{minuscules}`. Changer seulement la casse de son propre pseudo est
+/// permis. Ancien index supprimé et nouveau posé dans le même emprunt.
+fn set_pseudo(
+    req: proto::SetPseudo,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::UserProfile, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let valid = validate::validate_set_pseudo(req)?;
+
+    let mut art = state.art.borrow_mut();
+    let mut user = load_user(&mut art, user_id);
+    let new_index = pseudo_index_key(&valid.pseudo);
+    if let Some(owner) = art.get(new_index.as_bytes()) {
+        let owner = owner.as_bytes().expect("pseudo_index toujours Value::String");
+        if owner.as_slice() != user_id.to_string().as_bytes() {
+            return Err(proto::Error {
+                code: 409,
+                message: "pseudo déjà pris".to_string(),
+            });
+        }
+    }
+    if !user.pseudo.is_empty() {
+        art.del(pseudo_index_key(&user.pseudo).as_bytes());
+    }
+    art.set(
+        SharedByte::from_str(&new_index),
+        Value::String(SharedByte::from_str(&user_id.to_string())),
+    );
+    user.pseudo = valid.pseudo;
+    save_user(&mut art, &user);
+    state.dirty.set(true);
+    Ok(profile(&user))
+}
+
+/// Story 37 : nouvelle photo (version = id tiré du compteur global, change à chaque
+/// envoi) ou retrait (version 0, image supprimée).
+fn set_avatar(
+    req: proto::SetAvatar,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::UserProfile, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let valid = validate::validate_set_avatar(req)?;
+
+    let mut art = state.art.borrow_mut();
+    let mut user = require_pseudo(&mut art, user_id)?;
+    let key = format!("avatar:{user_id}");
+    match valid.image {
+        Some(image) => {
+            art.set(
+                SharedByte::from_str(&key),
+                Value::String(SharedByte::from_slice(image)),
+            );
+            user.avatar_version = art
+                .incr(SharedByte::from_str("id_counter"))
+                .expect("id_counter jamais utilisé pour autre chose qu'un entier")
+                as u64;
+        }
+        None => {
+            art.del(key.as_bytes());
+            user.avatar_version = 0;
+        }
+    }
+    save_user(&mut art, &user);
+    state.dirty.set(true);
+    Ok(profile(&user))
+}
+
+/// Story 36 : photo d'un utilisateur, lue par WebSocket faute de chemin HTTP pour les
+/// images (story 37). 404 si l'utilisateur n'existe pas ou n'a pas de photo.
+fn get_avatar(
+    req: proto::GetAvatar,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Avatar, proto::Error> {
+    require_auth(user_id)?;
+    let not_found = || proto::Error {
+        code: 404,
+        message: "pas de photo".to_string(),
+    };
+    let mut art = state.art.borrow_mut();
+    let user_bytes = art
+        .get(format!("user:{}", req.user_id).as_bytes())
+        .ok_or_else(not_found)?;
+    let user: proto::User = bincode::deserialize(
+        user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(),
+    )
+    .expect("user:{id} corrompu");
+    if user.avatar_version == 0 {
+        return Err(not_found());
+    }
+    let image = art
+        .get(format!("avatar:{}", user.id).as_bytes())
+        .expect("avatar_version ≠ 0 sans avatar:{id} — invariant violé");
+    Ok(proto::Avatar {
+        user_id: user.id,
+        avatar_version: user.avatar_version,
+        image: image
+            .as_bytes()
+            .expect("avatar:{id} toujours Value::String")
+            .as_slice()
+            .to_vec(),
     })
 }
 
@@ -497,7 +701,7 @@ fn create_channel(
     let valid = validate::validate_create_channel(req)?;
 
     let mut art = state.art.borrow_mut();
-    if !load_user(&mut art, user_id).is_admin {
+    if !require_pseudo(&mut art, user_id)?.is_admin {
         return Err(proto::Error {
             code: 403,
             message: "création de salon réservée à l'admin".to_string(),
@@ -588,6 +792,7 @@ fn send_message(
     let valid = validate::validate_send_message(req)?;
 
     let mut art = state.art.borrow_mut();
+    require_pseudo(&mut art, user_id)?;
     check_text_channel(&mut art, valid.channel_id)?;
 
     let id = art
@@ -655,6 +860,7 @@ fn delete_message(
 ) -> Result<proto::MessageDeleted, proto::Error> {
     let user_id = require_auth(user_id)?;
     let mut art = state.art.borrow_mut();
+    let user = require_pseudo(&mut art, user_id)?;
     check_text_channel(&mut art, req.channel_id)?;
 
     let unknown = || proto::Error {
@@ -669,7 +875,7 @@ fn delete_message(
         .get(key.as_bytes())
         .map(|val| decode_message(&val))
         .ok_or_else(unknown)?;
-    if message.user_id != user_id && !load_user(&mut art, user_id).is_admin {
+    if message.user_id != user_id && !user.is_admin {
         return Err(proto::Error {
             code: 403,
             message: "seuls l'auteur et l'admin peuvent supprimer ce message".to_string(),
@@ -696,68 +902,4 @@ fn compute_accept(key: &str) -> String {
     data.push_str(WS_GUID);
     let hash = digest(&SHA1_FOR_LEGACY_USE_ONLY, data.as_bytes());
     BASE64.encode(hash.as_ref())
-}
-
-// Encode une frame WebSocket serveur→client (jamais masquée, RFC 6455), FIN=1,
-// longueur étendue sur 2 ou 8 octets si besoin — un ServerEnvelope protobuf peut
-// dépasser les 125 octets du format court dès qu'un salon a un historique.
-fn encode_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(10 + payload.len());
-    frame.push(0x80 | opcode); // FIN=1
-    let len = payload.len();
-    if len < 126 {
-        frame.push(len as u8);
-    } else if len <= u16::MAX as usize {
-        frame.push(126);
-        frame.extend_from_slice(&(len as u16).to_be_bytes());
-    } else {
-        frame.push(127);
-        frame.extend_from_slice(&(len as u64).to_be_bytes());
-    }
-    frame.extend_from_slice(payload);
-    frame
-}
-
-// Décode une frame WebSocket client→serveur (toujours masquée, RFC 6455).
-// Retourne (opcode, payload démasqué). Gère la longueur étendue (126/127) mais pas
-// les messages fragmentés sur plusieurs frames, ni une requête à cheval sur deux
-// complétions de lecture io_uring — cf. commentaire sur `read_ws_upgrade_request`.
-fn decode_ws_frame(buf: &[u8]) -> Option<(u8, Vec<u8>)> {
-    if buf.len() < 2 {
-        return None;
-    }
-    let opcode = buf[0] & 0x0F;
-    let masked = buf[1] & 0x80 != 0;
-    if !masked {
-        return None;
-    }
-    let base_len = (buf[1] & 0x7F) as usize;
-    let (len, offset) = match base_len {
-        126 => {
-            if buf.len() < 4 {
-                return None;
-            }
-            (u16::from_be_bytes([buf[2], buf[3]]) as usize, 4)
-        }
-        127 => {
-            if buf.len() < 10 {
-                return None;
-            }
-            (u64::from_be_bytes(buf[2..10].try_into().ok()?) as usize, 10)
-        }
-        n => (n, 2),
-    };
-    if buf.len() < offset + 4 {
-        return None;
-    }
-    let mask = [buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]];
-    let payload_start = offset + 4;
-    if buf.len() < payload_start + len {
-        return None;
-    }
-    let mut payload = buf[payload_start..payload_start + len].to_vec();
-    for (i, b) in payload.iter_mut().enumerate() {
-        *b ^= mask[i % 4];
-    }
-    Some((opcode, payload))
 }

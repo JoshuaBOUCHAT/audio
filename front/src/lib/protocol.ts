@@ -38,6 +38,19 @@ export function syncRequest(channelId: number, lastSeenId: number): ClientEnvelo
   return { payload: "sync", sync: { channelId, lastSeenId } };
 }
 
+export function setPseudo(pseudo: string): ClientEnvelopeShape {
+  return { payload: "setPseudo", setPseudo: { pseudo } };
+}
+
+/** `image` vide : retirer la photo (story 37). */
+export function setAvatar(image: Uint8Array): ClientEnvelopeShape {
+  return { payload: "setAvatar", setAvatar: { image } };
+}
+
+export function getAvatar(userId: number): ClientEnvelopeShape {
+  return { payload: "getAvatar", getAvatar: { userId } };
+}
+
 export function deleteMessage(channelId: number, messageId: number): ClientEnvelopeShape {
   return { payload: "deleteMessage", deleteMessage: { channelId, messageId } };
 }
