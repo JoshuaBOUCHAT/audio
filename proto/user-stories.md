@@ -72,6 +72,38 @@ Protobuf qu'elle justifie dans `messages.proto`.
 17. En tant qu'utilisateur, je veux que ma connexion WebSocket se rétablisse
     automatiquement après une coupure réseau, sans recharger la page.
 
+### Profil (pseudo, photo)
+
+Numérotées à la suite (34+), même convention que les stories 28 et 33.
+
+34. En tant que nouvel utilisateur, je veux choisir un pseudo à ma première connexion,
+    avant d'accéder au chat, afin que les autres me reconnaissent sans voir mon email.
+    **Décisions (2026-10-12)** : pseudo **obligatoire** (aucune écriture — message,
+    salon, suppression, photo — n'est acceptée tant qu'il n'est pas choisi), **unique
+    casse ignorée** (même règle que les noms de salon, évite qu'on se fasse passer
+    pour quelqu'un), trimé, 1 à 32 caractères, sans caractère de contrôle. L'email
+    n'est **jamais** transmis aux autres utilisateurs, seulement à soi-même (`me`).
+35. En tant qu'utilisateur, je veux changer mon pseudo à tout moment (mêmes règles
+    que story 34), et que les autres voient le changement en temps réel — y compris
+    sur mes anciens messages, qui référencent mon id et non mon pseudo.
+36. En tant qu'utilisateur, je veux voir le pseudo et la photo de l'auteur de chaque
+    message. Tous les profils (id, pseudo, version de la photo) sont envoyés à la
+    connexion — groupe d'amis, cohérent avec « tout le monde voit tout » (décision de
+    conception ci-dessous) — puis tenus à jour par broadcast (nouveau compte qui
+    choisit son pseudo, changement de pseudo ou de photo).
+37. En tant qu'utilisateur, je veux définir, changer ou retirer ma photo de profil, et
+    que les autres voient le changement en temps réel.
+    **Décisions (2026-10-12)** : l'image est recadrée et réduite **côté client**
+    (carré 256×256) avant l'envoi ; le serveur n'accepte que PNG, JPEG ou WebP
+    (vérifiés par leurs octets magiques) et au plus 256 Kio — seule limite de taille
+    métier du système, nécessaire parce que l'image est stockée dans OxidArt et part
+    dans le snapshot. **Transport par WebSocket** (envoi et lecture) faute de chemin
+    HTTP pour les images aujourd'hui : quand le chemin HTTP des images existera
+    (pièces jointes, story 27, cf. `architecture.md` § HTTP/1.1), les photos devront
+    l'emprunter (`GET /avatar/{id}?v={version}`, cache navigateur). La version de
+    photo est conçue pour ça : un id tiré du compteur global à chaque changement, qui
+    sert aujourd'hui de clé de cache côté client et demain de paramètre d'URL.
+
 ### Messages privés (DM)
 
 Numérotées à la suite (28+) pour ne pas décaler les stories 18-27 déjà référencées

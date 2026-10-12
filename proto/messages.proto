@@ -11,10 +11,22 @@ package chat;
 // TYPES COMMUNS
 // ═══════════════════════════════════
 
+// Son propre compte (`AuthResponse.me`) : seul message qui porte un email.
 message User {
   uint64 id = 1;
   string email = 2;
   bool is_admin = 3;
+  string pseudo = 4;         // vide tant que non choisi (story 34)
+  uint64 avatar_version = 5; // 0 = pas de photo (story 37)
+}
+
+// Profil public d'un utilisateur, tel que les autres le voient (story 36) : jamais
+// l'email. `avatar_version` change à chaque nouvelle photo (id tiré du compteur
+// global) : clé de cache côté client, futur paramètre d'URL HTTP (story 37).
+message UserProfile {
+  uint64 id = 1;
+  string pseudo = 2;
+  uint64 avatar_version = 3; // 0 = pas de photo
 }
 
 message Channel {
@@ -57,6 +69,9 @@ message ClientEnvelope {
     DeleteMessage     delete_message     = 5; // story 13-14
     SyncRequest       sync               = 6; // story 12
     CreateChannel     create_channel     = 7; // story 7
+    SetPseudo         set_pseudo         = 8; // stories 34-35
+    SetAvatar         set_avatar         = 9; // story 37
+    GetAvatar         get_avatar         = 10; // story 36
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -100,6 +115,23 @@ message CreateChannel {
   // Autorisation vérifiée côté serveur : admin uniquement.
 }
 
+// Réponse : UserUpdated (aussi diffusé aux autres). 409 si le pseudo est pris.
+message SetPseudo {
+  string pseudo = 1;
+}
+
+// Image déjà recadrée/réduite par le client : PNG, JPEG ou WebP, ≤ 256 Kio.
+// `image` vide = retirer la photo. Réponse : UserUpdated (aussi diffusé).
+message SetAvatar {
+  bytes image = 1;
+}
+
+// Transport WS faute de chemin HTTP pour les images (story 37). Réponse : Avatar,
+// ou Error 404 si l'utilisateur n'a pas de photo.
+message GetAvatar {
+  uint64 user_id = 1;
+}
+
 // Spike de validation WebRTC (story 18) : échange SDP non-trickle (candidats hôte
 // inclus directement dans le SDP, cf. user-stories.md § Signaling) — suffisant pour
 // valider str0m+monoio+UDP en local. Le vrai flow (trickle ICE obligatoire) est post-v1.
@@ -121,6 +153,8 @@ message ServerEnvelope {
     SyncResponse    sync_response     = 6;
     ChannelCreated  channel_created   = 7;
     Error           error             = 8;
+    UserUpdated     user_updated      = 9;
+    Avatar          avatar            = 10;
   }
 }
 
@@ -135,6 +169,8 @@ message AuthResponse {
   // AuthRequest.token pour reprendre la session sans repasser par le lien
   // magique (story 33). Valide indéfiniment (story 6).
   string session_token = 3;
+  // Profils de tous les utilisateurs qui ont choisi un pseudo (story 36), `me` compris.
+  repeated UserProfile users = 4;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -155,6 +191,18 @@ message SyncResponse {
 
 message ChannelCreated {
   Channel channel = 1; // broadcast
+}
+
+// Pseudo ou photo d'un utilisateur créé/modifié (stories 34-37). Broadcast aux autres,
+// réponse directe à l'auteur du changement.
+message UserUpdated {
+  UserProfile profile = 1;
+}
+
+message Avatar {
+  uint64 user_id = 1;
+  uint64 avatar_version = 2;
+  bytes image = 3;
 }
 
 message Error {
