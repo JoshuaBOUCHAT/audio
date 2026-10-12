@@ -6,11 +6,12 @@
 // avec le token de session, puis resync depuis 0 les salons déjà chargés (story 15 —
 // seul moyen de voir les suppressions survenues pendant la coupure).
 
-import { BACK_END_URL } from "@/lib/config"
+import { BACK_END_URL, MEDIA_BASE } from "@/lib/config"
 import {
   ProtocolClient,
   authRequest,
   createChannel,
+  deleteMedia,
   deleteMessage,
   editMessage,
   openDm,
@@ -51,6 +52,12 @@ export type Phase =
   | "pseudo" // authentifié sans pseudo : choix obligatoire (story 34)
   | "offline" // WS fermé, reconnexion programmée (story 17)
 
+export type MediaEntry =
+  | { status: "loading" }
+  | { status: "ready"; url: string; ownerId: number; mime: string }
+  /** Supprimée pour tout le monde (story 50) ou inconnue. */
+  | { status: "missing" }
+
 export type ChatState = {
   phase: Phase
   me: Me | null
@@ -61,6 +68,10 @@ export type ChatState = {
   users: Record<number, Profile>
   /** Story 23 : ids vus en ligne par les autres (délais et invisibles appliqués par le serveur). */
   online: ReadonlySet<number>
+  /** Images (story 27) chargées ou en cours, par id. */
+  media: Record<string, MediaEntry>
+  /** Confirmation brève (« Lien copié »), effacée seule. */
+  toast: string | null
   /** Photos chargées : object URL de la version connue (story 36). */
   avatars: Record<number, { version: number; url: string }>
   /** Messages par salon ; absent = salon jamais synchronisé. */
@@ -78,6 +89,8 @@ const INITIAL: ChatState = {
   dms: [],
   users: {},
   online: new Set(),
+  media: {},
+  toast: null,
   avatars: {},
   messages: {},
   error: null,
@@ -104,6 +117,9 @@ export class ChatStore {
   private pendingMagicToken: string | null
   /** Clés `id:version` des photos en cours de chargement. */
   private readonly avatarRequests = new Set<string>()
+  /** Token de la session courante : authentifie les requêtes HTTP d'images (story 48). */
+  private sessionToken: string | null = null
+  private toastTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(magicToken: string | null) {
     this.pendingMagicToken = magicToken
@@ -223,6 +239,7 @@ export class ChatStore {
       return
     }
     saveSessionToken(auth.sessionToken ?? "")
+    this.sessionToken = auth.sessionToken ?? null
     const me = toMe(auth.me)
     const users: Record<number, Profile> = {}
     for (const p of auth.users ?? []) users[toNumber(p.id)] = toProfile(p)
@@ -261,6 +278,10 @@ export class ChatStore {
 
   logout = (): void => {
     clearSessionToken()
+    this.sessionToken = null
+    for (const entry of Object.values(this.state.media)) {
+      if (entry.status === "ready") URL.revokeObjectURL(entry.url)
+    }
     for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
     // La connexion reste authentifiée côté serveur : on repart d'un WS vierge.
     this.state = INITIAL
@@ -348,6 +369,92 @@ export class ChatStore {
   private bumpDm(message: ChatMessage): void {
     const dm = this.state.dms.find((d) => d.id === message.channelId)
     if (dm && message.id > dm.lastMessageId) this.upsertDm({ ...dm, lastMessageId: message.id })
+  }
+
+  flash = (toast: string): void => {
+    if (this.toastTimer) clearTimeout(this.toastTimer)
+    this.set({ toast })
+    this.toastTimer = setTimeout(() => this.set({ toast: null }), 2000)
+  }
+
+  /**
+   * Story 27 : envoie une image (`POST /media`). Rend son id, à placer dans le message ;
+   * `null` si refusée (format, quota : erreur dans `error`). L'image envoyée est mise
+   * en cache tout de suite, sans la retélécharger.
+   */
+  uploadMedia = async (file: Blob): Promise<string | null> => {
+    const me = this.state.me
+    if (!this.sessionToken || !me) return null
+    let response: Response
+    try {
+      response = await fetch(`${MEDIA_BASE}/media`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.sessionToken}` },
+        body: file,
+      })
+    } catch {
+      this.set({ error: "envoi de l'image impossible (réseau)" })
+      return null
+    }
+    const body = new Uint8Array(await response.arrayBuffer())
+    if (response.status !== 201) {
+      this.set({ error: httpError(body, response.status) })
+      return null
+    }
+    const media = chat.MediaUploaded.decode(body).media
+    if (!media?.id) return null
+    this.setMedia(media.id, {
+      status: "ready",
+      url: URL.createObjectURL(file),
+      ownerId: me.id,
+      mime: media.mime ?? "",
+    })
+    return media.id
+  }
+
+  /**
+   * Charge une image (`GET /media/{id}`, avec le token : story 48) si elle n'est pas
+   * déjà en cache. Appelé au rendu : idempotent.
+   */
+  ensureMedia = (id: string): void => {
+    if (this.state.media[id] || !this.sessionToken) return
+    this.setMedia(id, { status: "loading" })
+    void fetch(`${MEDIA_BASE}/media/${id}`, { headers: { Authorization: `Bearer ${this.sessionToken}` } })
+      .then(async (response) => {
+        if (response.status === 404) {
+          this.setMedia(id, { status: "missing" })
+          return
+        }
+        if (!response.ok) throw new Error(String(response.status))
+        const blob = await response.blob()
+        this.setMedia(id, {
+          status: "ready",
+          url: URL.createObjectURL(blob),
+          ownerId: Number(response.headers.get("X-Media-Owner") ?? 0),
+          mime: blob.type,
+        })
+      })
+      .catch(() => {
+        // Réseau ou session : réessayé au prochain rendu.
+        const { [id]: _failed, ...media } = this.state.media
+        this.set({ media })
+      })
+  }
+
+  /** Story 50 : « pour tout le monde », par celle ou celui qui l'a envoyée. */
+  deleteMediaEverywhere = async (id: string): Promise<void> => {
+    const response = await this.request(deleteMedia(id))
+    if (response?.mediaDeleted) this.markMediaMissing(id)
+  }
+
+  private setMedia(id: string, entry: MediaEntry): void {
+    this.set({ media: { ...this.state.media, [id]: entry } })
+  }
+
+  private markMediaMissing(id: string): void {
+    const entry = this.state.media[id]
+    if (entry?.status === "ready") URL.revokeObjectURL(entry.url)
+    this.setMedia(id, { status: "missing" })
   }
 
   /** Story 41 : appliqué tout de suite côté serveur (pas de délai, story 42). */
@@ -449,6 +556,9 @@ export class ChatStore {
         if (d) this.markDeleted(toNumber(d.channelId), toNumber(d.messageId))
         break
       }
+      case "mediaDeleted":
+        if (envelope.mediaDeleted?.mediaId) this.markMediaMissing(envelope.mediaDeleted.mediaId)
+        break
       case "presenceChanged": {
         const change = envelope.presenceChanged
         if (!change) break
@@ -492,5 +602,14 @@ export class ChatStore {
   private addChannel(channel: ChatChannel): void {
     if (this.state.channels.some((c) => c.id === channel.id)) return
     this.set({ channels: [...this.state.channels, channel].sort((a, b) => a.id - b.id) })
+  }
+}
+
+/** Corps d'une erreur HTTP : un `Error` protobuf, comme sur le WebSocket. */
+function httpError(body: Uint8Array, status: number): string {
+  try {
+    return chat.Error.decode(body).message || `erreur ${status}`
+  } catch {
+    return `erreur ${status}`
   }
 }

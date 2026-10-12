@@ -4,12 +4,14 @@
 // remet à zéro le mode de saisie et le brouillon.
 
 import { useEffect, useRef, useState } from "react"
-import { CornerUpRight, Pencil, Reply, Trash2, X } from "lucide-react"
+import { CornerUpRight, ImagePlus, Pencil, Reply, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { Avatar } from "./Avatar"
+import { Composer, type ComposerHandle } from "./Composer"
+import { plainText } from "./media"
+import { MessageBody } from "./MessageBody"
 import type { ChatMessage } from "./model"
 import type { ChatState, ChatStore } from "./store"
 
@@ -36,11 +38,11 @@ export function ChannelFeed({
   const me = state.me!
   const messages = state.messages[conversationId]
   const [mode, setMode] = useState<Mode>({ kind: "new" })
-  const [content, setContent] = useState("")
   const [confirmDelete, setConfirmDelete] = useState<ChatMessage | null>(null)
   // `nonce` relance l'animation quand on reclique sur la même citation.
   const [flash, setFlash] = useState<{ id: number; nonce: number } | null>(null)
-  const input = useRef<HTMLInputElement>(null)
+  const composer = useRef<ComposerHandle>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const count = messages?.length ?? 0
 
@@ -54,20 +56,20 @@ export function ChannelFeed({
   const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
 
   function startReply(target: ChatMessage) {
-    if (mode.kind === "edit") setContent(mode.draft)
+    if (mode.kind === "edit") composer.current?.setValue(mode.draft)
     setMode({ kind: "reply", target })
-    input.current?.focus()
+    composer.current?.focus()
   }
 
   function startEdit(target: ChatMessage) {
-    const draft = mode.kind === "edit" ? mode.draft : content
+    const draft = mode.kind === "edit" ? mode.draft : (composer.current?.getValue() ?? "")
     setMode({ kind: "edit", target, draft })
-    setContent(target.content)
-    input.current?.focus()
+    composer.current?.setValue(target.content)
+    composer.current?.focus()
   }
 
   function cancelMode() {
-    if (mode.kind === "edit") setContent(mode.draft)
+    if (mode.kind === "edit") composer.current?.setValue(mode.draft)
     setMode({ kind: "new" })
   }
 
@@ -77,19 +79,25 @@ export function ChannelFeed({
   }
 
   async function submit() {
-    const text = content.trim()
+    const editor = composer.current
+    if (!editor) return
+    if (editor.isUploading()) {
+      store.flash("Attends la fin de l'envoi des images")
+      return
+    }
+    const text = editor.getValue().trim()
     if (!text) return
     if (mode.kind === "edit") {
       // Contenu inchangé : rien à envoyer, on sort simplement du mode modification.
       if (text === mode.target.content.trim() || (await store.edit(conversationId, mode.target.id, text))) {
-        setContent(mode.draft)
+        editor.setValue(mode.draft)
         setMode({ kind: "new" })
       }
       return
     }
     // Vidé seulement si le serveur a accepté : un échec garde le texte à renvoyer.
     if (await store.send(conversationId, text, mode.kind === "reply" ? mode.target.id : 0)) {
-      setContent("")
+      editor.setValue("")
       setMode({ kind: "new" })
     }
   }
@@ -151,17 +159,7 @@ export function ChannelFeed({
                 {m.deleted ? (
                   <p className="text-sm italic text-muted-foreground">message supprimé</p>
                 ) : (
-                  <p className="text-sm whitespace-pre-wrap break-words">
-                    {m.content}
-                    {m.editedAt !== 0 && (
-                      <span
-                        className="ml-1.5 text-[0.7rem] text-muted-foreground"
-                        title={`modifié le ${new Date(m.editedAt).toLocaleString()}`}
-                      >
-                        (modifié)
-                      </span>
-                    )}
-                  </p>
+                  <MessageBody message={m} state={state} store={store} />
                 )}
                 {!m.deleted && (
                   <div className="absolute -top-3 right-4 hidden rounded-md border bg-background shadow-sm group-hover:flex">
@@ -228,31 +226,63 @@ export function ChannelFeed({
             </Button>
           </div>
         )}
-        <Input
-          ref={input}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && mode.kind !== "new") {
-              e.preventDefault()
-              cancelMode()
-            } else if (e.key === "ArrowUp" && content === "" && mode.kind === "new" && messages) {
-              // Raccourci : modifier son dernier message.
-              const last = messages.findLast((m) => m.userId === me.id && !m.deleted)
-              if (last) {
-                e.preventDefault()
-                startEdit(last)
-              }
-            }
-          }}
-          placeholder={mode.kind === "edit" ? "Nouveau contenu du message" : `Message ${label}`}
-          disabled={state.phase !== "ready"}
+        <div
           className={cn(
+            "flex items-end rounded-lg border border-input focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30",
             mode.kind !== "new" && "rounded-t-none",
-            mode.kind === "edit" && "border-primary/40 focus-visible:border-primary",
+            mode.kind === "edit" && "border-primary/40 focus-within:border-primary",
           )}
-          autoFocus
-        />
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="m-1"
+            onClick={() => fileInput.current?.click()}
+            disabled={state.phase !== "ready"}
+            title="Ajouter une image (ou Ctrl+V, ou glisser-déposer)"
+          >
+            <ImagePlus />
+          </Button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            hidden
+            onChange={(e) => {
+              composer.current?.insertFiles([...(e.target.files ?? [])])
+              e.target.value = ""
+            }}
+          />
+          <div className="min-w-0 flex-1">
+            <Composer
+              ref={composer}
+              state={state}
+              store={store}
+              placeholder={mode.kind === "edit" ? "Nouveau contenu du message" : `Message ${label}`}
+              disabled={state.phase !== "ready"}
+              className="pl-0"
+              onSubmit={() => void submit()}
+              onKeyDown={(e, empty) => {
+                if (e.key === "Escape" && mode.kind !== "new") {
+                  e.preventDefault()
+                  cancelMode()
+                } else if (e.key === "ArrowUp" && empty && mode.kind === "new" && messages) {
+                  // Raccourci : modifier son dernier message.
+                  const last = messages.findLast((m) => m.userId === me.id && !m.deleted)
+                  if (last) {
+                    e.preventDefault()
+                    startEdit(last)
+                  }
+                }
+              }}
+            />
+          </div>
+        </div>
+        <p className="mt-1 hidden text-[0.7rem] text-muted-foreground sm:block">
+          Entrée pour envoyer · Maj+Entrée pour aller à la ligne
+        </p>
       </form>
 
       {confirmDelete && (
@@ -330,7 +360,7 @@ function ConfirmDelete({
         <CardContent>
           <div className="rounded-md border bg-muted/50 p-3 text-sm">
             <div className="font-semibold">{pseudo}</div>
-            <p className="line-clamp-4 whitespace-pre-wrap break-words">{message.content}</p>
+            <p className="line-clamp-4 whitespace-pre-wrap break-words">{plainText(message.content)}</p>
           </div>
           <p className="mt-3 text-sm text-muted-foreground">Cette action est définitive.</p>
         </CardContent>
@@ -350,7 +380,7 @@ function ConfirmDelete({
 
 function excerpt(message: ChatMessage): string {
   if (message.deleted) return "message supprimé"
-  const text = message.content.replace(/\s+/g, " ").trim()
+  const text = plainText(message.content).replace(/\s+/g, " ").trim()
   return text.length > 100 ? `${text.slice(0, 100)}…` : text
 }
 

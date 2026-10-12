@@ -196,6 +196,15 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
       )}
 
       {profileOpen && <ProfilePanel state={state} store={store} onClose={() => setProfileOpen(false)} />}
+
+      {state.toast && (
+        <div
+          role="status"
+          className="fixed bottom-20 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-foreground px-3 py-1.5 text-sm text-background shadow-lg"
+        >
+          {state.toast}
+        </div>
+      )}
     </div>
   )
 }

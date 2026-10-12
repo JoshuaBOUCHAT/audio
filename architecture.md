@@ -269,14 +269,17 @@ Raisons :
   io_uring de monoio sans un shim tokio (`monoio-compat`, fragile) — irait à l'encontre du
   choix "zéro Tokio". Le gain de HTTP/2 (multiplexing) ne sert de toute façon à rien vu le
   faible nombre d'assets (build Vite = 2-4 fichiers) et le peu de trafic HTTP attendu.
-- Auth sur les requêtes HTTP d'assets/pièces jointes (un `<img src>` ne porte pas de header
-  custom) : cookie de session `HttpOnly` envoyé automatiquement par le navigateur — même
-  mécanisme que le token de session opaque déjà utilisé pour le WS, pas de système d'auth
-  séparé à maintenir.
+- Auth sur les requêtes HTTP d'images : **`Authorization: Bearer {session_token}`**, le
+  même token opaque que le WS (décision 2026-10-12, story 48, remplace l'idée d'un cookie
+  `HttpOnly`). Le client charge l'image par `fetch` puis l'affiche depuis un blob : un
+  cookie ne suivrait pas la future app Tauri, d'une autre origine que le serveur
+  (`SameSite`). Conséquence assumée : un lien `/media/{id}` ne s'ouvre que dans l'app.
 
-**Scope volontairement réduit du serveur HTTP maison** (pas un serveur généraliste) :
-GET uniquement, keep-alive, `Content-Length` correct — pas de compression négociée, pas
-de multipart, pas de `Range` au départ. Boucle de service basée sur `httparse` (parseur
+**Scope volontairement réduit du serveur HTTP maison** (pas un serveur généraliste,
+`back-end/src/http.rs`) : GET, plus `POST /media` pour l'envoi d'images (corps brut,
+`Content-Length` obligatoire, écrit en flux sur disque), keep-alive, `Content-Length`
+correct — pas de compression négociée, pas de multipart, pas de chunked, pas de `Range`
+au départ. En dev, le proxy Vite transmet `/media` au back-end (même origine). Boucle de service basée sur `httparse` (parseur
 bas niveau déjà utilisé par `hyper`, donc pas un "parsing HTTP écrit à la main" au sens
 naïf) :
 

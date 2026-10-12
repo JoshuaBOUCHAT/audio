@@ -70,6 +70,7 @@ dev`. Compilés hors d'un build release (`#[cfg(debug_assertions)]`).
 | `PseudoScreen.tsx` / `ProfilePanel.tsx` / `Avatar.tsx` | pseudo obligatoire avant le chat (story 34) ; profil : pseudo, photo (stories 35, 37) ; photo ou initiale, chargée à la demande et mise en cache par version (story 36) |
 | `MembersPanel.tsx` | membres à droite, « En ligne / Hors ligne — N », triés par pseudo ; statut En ligne / Invisible dans le profil (stories 23, 41-42 ; présence en mémoire côté serveur, `presence.rs`) |
 | `ChatView.tsx` (DM) | bouton Salons / Privé en haut à gauche ; DM triés par dernière activité ; clic sur un membre = ouvrir le DM et basculer dessus (stories 28-32) ; même `ChannelFeed` que les salons |
+| `Composer.tsx` / `MessageBody.tsx` / `media.ts` | images (stories 27, 45-50) : barre de saisie riche (texte et miniatures mélangés, bouton, Ctrl+V, glisser-déposer, Maj+Entrée) ; une image = lien `/media/{id}` dans le texte ; vue en grand, copier le lien, enregistrer, supprimer ici / pour tout le monde. Back-end : `http.rs`, `media.rs` (fichiers `data/media/{sha256}`, quota `AUDIO_MEDIA_QUOTA_GIB`) |
 | `avatar-image.ts` | recadrage carré 256×256, WebP (repli JPEG) ≤ 256 Kio avant envoi |
 
 URL du back-end : `VITE_BACK_END_URL`, défaut `wss://127.0.0.1:8443` (`src/lib/config.ts`).
