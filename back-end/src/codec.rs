@@ -54,6 +54,7 @@ fn decode_padded<T: DeserializeOwned>(bytes: &[u8], error: &bincode::Error) -> O
 #[cfg(debug_assertions)]
 pub fn upgrade_dev(art: &mut oxidart::OxidArt) {
     use crate::{media::StoredMedia, proto};
+    drop_unreadable_media(art);
     let upgraded = upgrade::<proto::User>(art, b"user:")
         + upgrade::<proto::Channel>(art, b"channel:")
         + upgrade::<proto::Channel>(art, b"dm:")
@@ -61,6 +62,36 @@ pub fn upgrade_dev(art: &mut oxidart::OxidArt) {
         + upgrade::<StoredMedia>(art, b"media:");
     if upgraded > 0 {
         println!("[dev] {upgraded} enregistrement(s) mis au schéma courant");
+    }
+}
+
+/// Debug : une image ou un fichier illisible même complété (schéma réordonné, cf.
+/// `StoredMedia`) est retiré plutôt que de bloquer le démarrage — rien ne dépend d'un
+/// média, ses liens s'afficheront « fichier supprimé ». Les autres types (User,
+/// Message…) sont référencés ailleurs : eux plantent toujours.
+#[cfg(debug_assertions)]
+fn drop_unreadable_media(art: &mut oxidart::OxidArt) {
+    use crate::media::StoredMedia;
+    use oxidart::krange::RangeVal;
+
+    let unreadable: Vec<Vec<u8>> = art
+        .krange(b"media:", b"", usize::MAX, false)
+        .iter()
+        .filter(|(_, val)| match val {
+            RangeVal::Bytes(b) => {
+                let bytes = b.as_slice();
+                let mut padded = bytes.to_vec();
+                padded.resize(bytes.len() + 4096, 0);
+                bincode::deserialize::<StoredMedia>(bytes).is_err()
+                    && bincode::deserialize::<StoredMedia>(&padded).is_err()
+            }
+            RangeVal::Int(_) => true,
+        })
+        .map(|(key, _)| key.to_vec())
+        .collect();
+    for key in &unreadable {
+        eprintln!("[dev] {} illisible (ancien schéma) : retiré", String::from_utf8_lossy(key));
+        art.del(key);
     }
 }
 
