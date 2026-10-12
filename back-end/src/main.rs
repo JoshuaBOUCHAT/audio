@@ -353,6 +353,22 @@ fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::EditMessage(req)) => match edit_message(req, state, *user_id) {
+            Ok(message) => {
+                let edited = proto::server_envelope::Payload::MessageEdited(
+                    proto::MessageEdited {
+                        message: Some(message),
+                    },
+                );
+                let event = proto::ServerEnvelope {
+                    request_id: String::new(),
+                    payload: Some(edited.clone()),
+                };
+                registry::broadcast(&state.registry, conn, &server_frame(&event));
+                edited
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         Some(Payload::SetPseudo(req)) => match set_pseudo(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -794,27 +810,96 @@ fn send_message(
     let mut art = state.art.borrow_mut();
     require_pseudo(&mut art, user_id)?;
     check_text_channel(&mut art, valid.channel_id)?;
+    // Story 39 : le message cité doit exister dans ce salon (supprimé compris : on
+    // peut répondre à un message supprimé entre-temps, la citation l'affichera).
+    if let Some(reply_to_id) = valid.reply_to_id {
+        load_message(&mut art, valid.channel_id, reply_to_id).map_err(|_| proto::Error {
+            code: 404,
+            message: "message cité inconnu".to_string(),
+        })?;
+    }
 
     let id = art
         .incr(SharedByte::from_str("id_counter"))
         .expect("id_counter jamais utilisé pour autre chose qu'un entier") as u64;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("horloge avant 1970")
-        .as_millis() as u64;
     let message = proto::Message {
         id,
         channel_id: valid.channel_id,
         user_id,
         content: valid.content,
-        timestamp,
+        timestamp: now_ms(),
         deleted: false,
+        reply_to_id: valid.reply_to_id.unwrap_or(0),
+        edited_at: 0,
     };
-    let encoded = bincode::serialize(&message).expect("sérialisation Message");
+    save_message(&mut art, &message);
+    state.dirty.set(true);
+    Ok(message)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("horloge avant 1970")
+        .as_millis() as u64
+}
+
+fn save_message(art: &mut OxidArt, message: &proto::Message) {
+    let encoded = bincode::serialize(message).expect("sérialisation Message");
     art.set(
-        SharedByte::from_str(&keys::message_key(valid.channel_id, id)),
+        SharedByte::from_str(&keys::message_key(message.channel_id, message.id)),
         Value::String(SharedByte::from_slice(encoded)),
     );
+}
+
+/// Message `message_id` du salon, 404 s'il n'existe pas (id client hors borne compris).
+fn load_message(
+    art: &mut OxidArt,
+    channel_id: u64,
+    message_id: u64,
+) -> Result<proto::Message, proto::Error> {
+    let unknown = || proto::Error {
+        code: 404,
+        message: "message inconnu".to_string(),
+    };
+    if !keys::is_sortable(message_id) {
+        return Err(unknown());
+    }
+    art.get(keys::message_key(channel_id, message_id).as_bytes())
+        .map(|val| decode_message(&val))
+        .ok_or_else(unknown)
+}
+
+/// Story 40 : modification par l'auteur seul (l'admin peut supprimer mais pas faire
+/// dire quelque chose à quelqu'un), pas sur un tombstone. Pas d'historique : seul le
+/// dernier contenu et `edited_at` sont gardés.
+fn edit_message(
+    req: proto::EditMessage,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::Message, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let valid = validate::validate_edit_message(req)?;
+
+    let mut art = state.art.borrow_mut();
+    require_pseudo(&mut art, user_id)?;
+    check_text_channel(&mut art, valid.channel_id)?;
+    let mut message = load_message(&mut art, valid.channel_id, valid.message_id)?;
+    if message.user_id != user_id {
+        return Err(proto::Error {
+            code: 403,
+            message: "seul l'auteur peut modifier ce message".to_string(),
+        });
+    }
+    if message.deleted {
+        return Err(proto::Error {
+            code: 400,
+            message: "message supprimé".to_string(),
+        });
+    }
+    message.content = valid.content;
+    message.edited_at = now_ms();
+    save_message(&mut art, &message);
     state.dirty.set(true);
     Ok(message)
 }
@@ -863,18 +948,7 @@ fn delete_message(
     let user = require_pseudo(&mut art, user_id)?;
     check_text_channel(&mut art, req.channel_id)?;
 
-    let unknown = || proto::Error {
-        code: 404,
-        message: "message inconnu".to_string(),
-    };
-    if !keys::is_sortable(req.message_id) {
-        return Err(unknown());
-    }
-    let key = keys::message_key(req.channel_id, req.message_id);
-    let mut message = art
-        .get(key.as_bytes())
-        .map(|val| decode_message(&val))
-        .ok_or_else(unknown)?;
+    let mut message = load_message(&mut art, req.channel_id, req.message_id)?;
     if message.user_id != user_id && !user.is_admin {
         return Err(proto::Error {
             code: 403,
@@ -884,11 +958,7 @@ fn delete_message(
 
     message.deleted = true;
     message.content.clear();
-    let encoded = bincode::serialize(&message).expect("sérialisation Message");
-    art.set(
-        SharedByte::from_str(&key),
-        Value::String(SharedByte::from_slice(encoded)),
-    );
+    save_message(&mut art, &message);
     state.dirty.set(true);
     Ok(proto::MessageDeleted {
         channel_id: req.channel_id,

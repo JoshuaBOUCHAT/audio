@@ -67,19 +67,42 @@ pub fn validate_create_channel(
 pub struct ValidSendMessage {
     pub channel_id: u64,
     pub content: String,
+    /// Story 39 : `SendMessage.reply_to_id` non nul. Son existence dans le salon dépend
+    /// de l'état, vérifiée par `send_message`.
+    pub reply_to_id: Option<u64>,
 }
 
 pub fn validate_send_message(raw: proto::SendMessage) -> Result<ValidSendMessage, proto::Error> {
-    if raw.content.trim().is_empty() {
+    Ok(ValidSendMessage {
+        channel_id: raw.channel_id,
+        content: validate_content(raw.content)?,
+        reply_to_id: (raw.reply_to_id != 0).then_some(raw.reply_to_id),
+    })
+}
+
+/// Story 40 : mêmes règles de contenu qu'à l'envoi.
+pub struct ValidEditMessage {
+    pub channel_id: u64,
+    pub message_id: u64,
+    pub content: String,
+}
+
+pub fn validate_edit_message(raw: proto::EditMessage) -> Result<ValidEditMessage, proto::Error> {
+    Ok(ValidEditMessage {
+        channel_id: raw.channel_id,
+        message_id: raw.message_id,
+        content: validate_content(raw.content)?,
+    })
+}
+
+fn validate_content(content: String) -> Result<String, proto::Error> {
+    if content.trim().is_empty() {
         return Err(proto::Error {
             code: 400,
             message: "message vide".to_string(),
         });
     }
-    Ok(ValidSendMessage {
-        channel_id: raw.channel_id,
-        content: raw.content,
-    })
+    Ok(content)
 }
 
 pub const MAX_PSEUDO_CHARS: usize = 32;

@@ -29,8 +29,13 @@ export function createChannel(name: string): ClientEnvelopeShape {
   return { payload: "createChannel", createChannel: { name } };
 }
 
-export function sendMessage(channelId: number, content: string): ClientEnvelopeShape {
-  return { payload: "sendMessage", sendMessage: { channelId, content } };
+/** `replyToId` : message cité (story 39), 0 = pas une réponse. */
+export function sendMessage(channelId: number, content: string, replyToId = 0): ClientEnvelopeShape {
+  return { payload: "sendMessage", sendMessage: { channelId, content, replyToId } };
+}
+
+export function editMessage(channelId: number, messageId: number, content: string): ClientEnvelopeShape {
+  return { payload: "editMessage", editMessage: { channelId, messageId, content } };
 }
 
 /** `lastSeenId = 0` : resync complète du salon, à utiliser à la reconnexion (story 15). */
