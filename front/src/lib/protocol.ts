@@ -58,6 +58,16 @@ export function deleteMedia(mediaId: string): ClientEnvelopeShape {
   return { payload: "deleteMedia", deleteMedia: { mediaId } };
 }
 
+/** Story 51 : métadonnées de médias, sans les télécharger. */
+export function getMedia(mediaIds: string[]): ClientEnvelopeShape {
+  return { payload: "getMedia", getMedia: { mediaIds } };
+}
+
+/** Story 53 : ticket de téléchargement natif (60 s). */
+export function requestDownload(mediaId: string): ClientEnvelopeShape {
+  return { payload: "requestDownload", requestDownload: { mediaId } };
+}
+
 /** Story 43 : vide = retirer la description. */
 export function setBio(bio: string): ClientEnvelopeShape {
   return { payload: "setBio", setBio: { bio } };

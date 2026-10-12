@@ -1,4 +1,6 @@
-//! Images (stories 27, 45-50) : fichiers sur disque, métadonnées dans OxidArt.
+//! Images et fichiers (stories 27, 45-53) : fichiers sur disque, métadonnées dans
+//! OxidArt. Une image propre (story 47) s'affiche dans le fil ; tout le reste est un
+//! fichier, toujours servi en téléchargement (story 51).
 //!
 //! - `data/media/{sha256}` : contenu, nommé par son empreinte — un même fichier
 //!   envoyé deux fois n'est stocké qu'une fois. `media_file:{sha256}` (counter) compte
@@ -12,6 +14,7 @@
 //! à chaque snapshot. Le contenu transite par HTTP (`http.rs`), jamais par le WS.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use oxidart::{OxidArt, Value};
 use radixox_lib::shared_byte::SharedByte;
@@ -87,7 +90,7 @@ pub fn check_quota(art: &mut OxidArt, config: &MediaConfig, user_id: u64, size: 
         return Err(proto::Error {
             code: 413,
             message: format!(
-                "quota d'images dépassé ({:.1} Gio par personne)",
+                "quota de stockage dépassé ({:.1} Gio par personne)",
                 config.quota as f64 / (1u64 << 30) as f64
             ),
         });
@@ -169,7 +172,7 @@ pub fn delete(art: &mut OxidArt, config: &MediaConfig, id: &str, user_id: u64) -
     if stored.meta.owner_id != user_id {
         return Err(proto::Error {
             code: 403,
-            message: "seule la personne qui a envoyé l'image peut la supprimer pour tout le monde"
+            message: "seule la personne qui l'a envoyé peut le supprimer pour tout le monde"
                 .to_string(),
         });
     }
@@ -188,10 +191,90 @@ pub fn delete(art: &mut OxidArt, config: &MediaConfig, id: &str, user_id: u64) -
     Ok(())
 }
 
+/// Story 51 : un fichier qui n'est pas une image propre.
+pub const FILE_MIME: &str = "application/octet-stream";
+const MAX_NAME_CHARS: usize = 255;
+
+/// Story 51 : nom fourni par le client (`X-Media-Name`, encodé en pourcentage),
+/// assaini — ni chemin, ni caractère de contrôle, 255 caractères max. `fallback` si
+/// rien d'utilisable.
+pub fn sanitize_name(raw: Option<&str>, fallback: &str) -> String {
+    let decoded = raw.map(percent_decode).unwrap_or_default();
+    let base = decoded.rsplit(['/', '\\']).next().unwrap_or("");
+    let name: String = base
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if name.is_empty() || name == "." || name == ".." {
+        fallback.to_string()
+    } else {
+        name
+    }
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Some(b) = raw.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `filename*=UTF-8''…` (RFC 5987) pour `Content-Disposition`.
+pub fn percent_encode(name: &str) -> String {
+    name.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Story 53 : durée de vie d'un ticket de téléchargement (TTL natif d'OxidArt). Vérifiée
+/// au début de la requête seulement : un téléchargement plus long n'est pas coupé.
+const TICKET_TTL: Duration = Duration::from_secs(60);
+
+fn ticket_key(ticket: &str) -> String {
+    format!("download_ticket:{ticket}")
+}
+
+pub fn create_ticket(art: &mut OxidArt, media_id: &str) -> String {
+    let ticket = uuid::Uuid::new_v4().to_string();
+    art.set_ttl(
+        SharedByte::from_str(&ticket_key(&ticket)),
+        TICKET_TTL,
+        Value::String(SharedByte::from_str(media_id)),
+    );
+    ticket
+}
+
+/// Ticket valide pour ce média (réutilisable pendant ses 60 s : le navigateur peut
+/// rejouer la requête).
+pub fn check_ticket(art: &mut OxidArt, ticket: &str, media_id: &str) -> bool {
+    is_media_id(ticket)
+        && art
+            .get(ticket_key(ticket).as_bytes())
+            .is_some_and(|v| v.as_bytes().is_some_and(|b| b.as_slice() == media_id.as_bytes()))
+}
+
 pub fn not_found() -> proto::Error {
     proto::Error {
         code: 404,
-        message: "image inconnue ou supprimée".to_string(),
+        message: "fichier inconnu ou supprimé".to_string(),
     }
 }
 
@@ -221,6 +304,17 @@ mod tests {
         assert_eq!(sniff(b"<svg onload=alert(1)>").unwrap_err().code, 400);
         assert_eq!(sniff(&png(MAX_SIDE + 1, 10)).unwrap_err().code, 400);
         assert_eq!(sniff(&png(0, 10)).unwrap_err().code, 400);
+    }
+
+    #[test]
+    fn noms_assainis() {
+        assert_eq!(sanitize_name(Some("vacances%20%C3%A9t%C3%A9.zip"), "f"), "vacances été.zip");
+        assert_eq!(sanitize_name(Some("..%2F..%2Fetc%2Fpasswd"), "f"), "passwd");
+        assert_eq!(sanitize_name(Some("a%0Ab"), "f"), "ab");
+        assert_eq!(sanitize_name(Some(".."), "f"), "f");
+        assert_eq!(sanitize_name(None, "fichier"), "fichier");
+        assert_eq!(sanitize_name(Some(&"é".repeat(300)), "f").chars().count(), 255);
+        assert_eq!(percent_encode("été 1.zip"), "%C3%A9t%C3%A9%201.zip");
     }
 
     #[test]

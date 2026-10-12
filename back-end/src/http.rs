@@ -1,6 +1,6 @@
 //! HTTP/1.1 sur le même port que le WebSocket (architecture.md § HTTP/1.1) : routage
-//! de chaque connexion TLS, upgrade WebSocket, page d'index, et images (stories 27,
-//! 45-50) — `POST /media` (envoi) et `GET /media/{id}` (lecture).
+//! de chaque connexion TLS, upgrade WebSocket, page d'index, images et fichiers
+//! (stories 27, 45-53) — `POST /media` (envoi) et `GET /media/{id}` (lecture).
 //!
 //! Volontairement réduit : keep-alive, `Content-Length` obligatoire pour un corps (pas
 //! de chunked), pas de compression ni de `Range`. Les requêtes s'accumulent dans un
@@ -33,6 +33,10 @@ struct Head {
     content_length: Option<u64>,
     authorization: Option<String>,
     ws_key: Option<String>,
+    /// Stories 51-52 : nom (encodé en pourcentage) et description d'un dossier.
+    media_name: Option<String>,
+    folder_files: u32,
+    folder_size: u64,
     keep_alive: bool,
 }
 
@@ -88,6 +92,9 @@ async fn read_head(tls: &mut TlsStream, buf: &mut Vec<u8>) -> Option<Head> {
                         content_length: header("content-length").and_then(|v| v.trim().parse().ok()),
                         authorization: header("authorization"),
                         ws_key: header("sec-websocket-key"),
+                        media_name: header("x-media-name"),
+                        folder_files: header("x-folder-files").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                        folder_size: header("x-folder-size").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                         keep_alive: req.version == Some(1) && !close,
                     };
                     buf.drain(..len);
@@ -122,7 +129,10 @@ async fn route(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Vec
         }
         ("POST", "/media") => upload(tls, state, head, buf).await,
         ("GET", path) if path.starts_with("/media/") => {
-            get_media(tls, state, head, &path["/media/".len()..]).await?;
+            let rest = &path["/media/".len()..];
+            let (id, query) = rest.split_once('?').unwrap_or((rest, ""));
+            let ticket = query.split('&').find_map(|kv| kv.strip_prefix("ticket="));
+            get_media(tls, state, head, id, ticket).await?;
             Ok(true)
         }
         _ => {
@@ -151,9 +161,10 @@ fn bearer_user(state: &AppState, head: &Head) -> Result<u64, proto::Error> {
     crate::session_user(&mut state.art.borrow_mut(), token).ok_or_else(unauthorized)
 }
 
-/// Stories 27, 47-48 : corps écrit au fil de l'eau dans un fichier temporaire (une
-/// image de plusieurs Mo ne reste pas en mémoire), haché en SHA-256 au passage ;
-/// format vérifié dès le premier Mio reçu, avant d'accepter le reste.
+/// Stories 27, 47-48, 51 : corps écrit au fil de l'eau dans un fichier temporaire
+/// (plusieurs Go ne restent pas en mémoire), haché en SHA-256 au passage. Aucun type
+/// refusé : le premier Mio décide si c'est une image propre (affichée dans le fil) ou
+/// un fichier (toujours servi en téléchargement).
 async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Vec<u8>) -> std::io::Result<bool> {
     let config = &state.media;
     let checked = (|| {
@@ -165,7 +176,7 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
         if len == 0 {
             return Err(proto::Error {
                 code: 400,
-                message: "image vide".to_string(),
+                message: "fichier vide".to_string(),
             });
         }
         let mut art = state.art.borrow_mut();
@@ -185,7 +196,6 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
     let file = File::create(&temp).await?;
     let mut hasher = digest::Context::new(&digest::SHA256);
     let mut probe: Vec<u8> = Vec::new();
-    let mut sniffed = None;
     let mut received: u64 = 0;
     while received < len {
         let chunk = if buf.is_empty() {
@@ -206,28 +216,16 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
         let (body, rest) = chunk.split_at(take);
         buf.extend_from_slice(rest);
         hasher.update(body);
-        if sniffed.is_none() {
-            probe.extend_from_slice(&body[..body.len().min(media::PROBE_LEN - probe.len())]);
-        }
+        probe.extend_from_slice(&body[..body.len().min(media::PROBE_LEN - probe.len())]);
         let body = body.to_vec();
         let (res, _) = file.write_all_at(body, received).await;
         res?;
         received += take as u64;
-
-        if sniffed.is_none() && (probe.len() == media::PROBE_LEN || received == len) {
-            match media::sniff(&probe) {
-                Ok(found) => sniffed = Some(found),
-                Err(error) => {
-                    let _ = file.close().await;
-                    let _ = monoio::fs::remove_file(&temp).await;
-                    respond_error(tls, &error).await?;
-                    return Ok(received == len);
-                }
-            }
-        }
     }
     file.close().await?;
-    let (mime, width, height) = sniffed.expect("format vérifié une fois le corps reçu");
+    let (mime, width, height) = media::sniff(&probe).unwrap_or((media::FILE_MIME, 0, 0));
+    let fallback = if mime == media::FILE_MIME { "fichier" } else { "image" };
+    let name = media::sanitize_name(head.media_name.as_deref(), fallback);
     let sha256: String = hasher.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect();
 
     // Quota revérifié : un autre envoi du même utilisateur a pu finir entre-temps.
@@ -258,6 +256,9 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
             height,
             owner_id: user_id,
             created_at: SystemTime::now().duration_since(UNIX_EPOCH).expect("horloge").as_millis() as u64,
+            name,
+            folder_files: head.folder_files,
+            folder_size: head.folder_size,
         },
         sha256,
     };
@@ -275,16 +276,39 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
     Ok(true)
 }
 
-/// Stories 27, 46, 48 : réservé aux utilisateurs connectés, fichier lu par morceaux
-/// (io_uring) sans le charger entier. Immuable (un id ne change jamais de contenu) :
-/// cache navigateur d'un an.
-async fn get_media(tls: &mut TlsStream, state: &AppState, head: &Head, id: &str) -> std::io::Result<()> {
-    let found = bearer_user(state, head).and_then(|_| {
+/// Stories 27, 46, 48, 53 : réservé aux utilisateurs connectés (session en
+/// `Authorization`) ou porteurs d'un ticket de téléchargement ; fichier lu par
+/// morceaux (io_uring) sans le charger entier. Immuable (un id ne change jamais de
+/// contenu) : cache navigateur d'un an. Un fichier, ou tout téléchargement par
+/// ticket, part en pièce jointe : jamais interprété par le navigateur (story 51).
+async fn get_media(
+    tls: &mut TlsStream,
+    state: &AppState,
+    head: &Head,
+    id: &str,
+    ticket: Option<&str>,
+) -> std::io::Result<()> {
+    let found = (|| {
         if !media::is_media_id(id) {
             return Err(media::not_found());
         }
-        media::load(&mut state.art.borrow_mut(), id).ok_or_else(media::not_found)
-    });
+        let mut art = state.art.borrow_mut();
+        match ticket {
+            Some(ticket) if media::check_ticket(&mut art, ticket, id) => {}
+            Some(_) => {
+                return Err(proto::Error {
+                    code: 401,
+                    message: "ticket de téléchargement invalide ou expiré".to_string(),
+                });
+            }
+            None => {
+                drop(art);
+                bearer_user(state, head)?;
+                art = state.art.borrow_mut();
+            }
+        }
+        media::load(&mut art, id).ok_or_else(media::not_found)
+    })();
     let stored = match found {
         Ok(stored) => stored,
         Err(error) => return respond_error(tls, &error).await,
@@ -297,9 +321,21 @@ async fn get_media(tls: &mut TlsStream, state: &AppState, head: &Head, id: &str)
         }
     };
     let meta = &stored.meta;
+    let attachment = ticket.is_some() || meta.mime == media::FILE_MIME;
+    let disposition = if attachment {
+        // Repli ASCII pour les vieux clients, nom exact en UTF-8 (RFC 6266 / 5987).
+        let ascii: String = meta.name.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
+        format!(
+            "Content-Disposition: attachment; filename=\"{ascii}\"; filename*=UTF-8''{}\r\n",
+            media::percent_encode(&meta.name)
+        )
+    } else {
+        String::new()
+    };
+    let content_type = if meta.mime == media::FILE_MIME { media::FILE_MIME } else { &meta.mime };
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: private, max-age=31536000, immutable\r\nX-Media-Owner: {}\r\n\r\n",
-        meta.mime, meta.size, meta.owner_id
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\n{disposition}Cache-Control: private, max-age=31536000, immutable\r\nX-Media-Owner: {}\r\n\r\n",
+        meta.size, meta.owner_id
     );
     tls.write_all(header.into_bytes()).await.0?;
     let mut pos = 0;

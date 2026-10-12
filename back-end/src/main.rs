@@ -379,6 +379,26 @@ fn handle_client_envelope(
                 Err(err) => proto::server_envelope::Payload::Error(err),
             }
         }
+        Some(Payload::GetMedia(req)) => match get_media_info(req, state, *user_id) {
+            Ok(info) => proto::server_envelope::Payload::MediaInfo(info),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::RequestDownload(req)) => {
+            let ticket = require_auth(*user_id).and_then(|_| {
+                let mut art = state.art.borrow_mut();
+                if !media::is_media_id(&req.media_id) || media::load(&mut art, &req.media_id).is_none() {
+                    return Err(media::not_found());
+                }
+                Ok(media::create_ticket(&mut art, &req.media_id))
+            });
+            match ticket {
+                Ok(ticket) => proto::server_envelope::Payload::DownloadTicket(proto::DownloadTicket {
+                    media_id: req.media_id,
+                    ticket,
+                }),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
         Some(Payload::SetBio(req)) => match set_bio(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -692,6 +712,35 @@ fn set_status(
     save_user(&mut art, &user);
     state.dirty.set(true);
     Ok(status)
+}
+
+/// Au plus autant d'ids par `GetMedia` : un salon affiche rarement plus de médias
+/// d'un coup, et la réponse reste petite.
+const MAX_MEDIA_PER_REQUEST: usize = 500;
+
+/// Story 51 : métadonnées (nom, taille, type, propriétaire) sans le contenu ; les ids
+/// inconnus, mal formés ou supprimés sont simplement absents de la réponse.
+fn get_media_info(
+    req: proto::GetMedia,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::MediaInfo, proto::Error> {
+    require_auth(user_id)?;
+    if req.media_ids.len() > MAX_MEDIA_PER_REQUEST {
+        return Err(proto::Error {
+            code: 400,
+            message: format!("{MAX_MEDIA_PER_REQUEST} médias max par requête"),
+        });
+    }
+    let mut art = state.art.borrow_mut();
+    let media = req
+        .media_ids
+        .iter()
+        .filter(|id| media::is_media_id(id))
+        .filter_map(|id| media::load(&mut art, id))
+        .map(|stored| stored.meta)
+        .collect();
+    Ok(proto::MediaInfo { media })
 }
 
 /// Story 43 : description de profil, diffusée comme un changement de pseudo.
