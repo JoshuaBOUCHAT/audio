@@ -192,6 +192,14 @@ message ClientEnvelope {
     SetTheme          set_theme          = 18; // story 55
     MarkRead          mark_read          = 19; // story 56
     SetSettings       set_settings       = 20; // stories 57-60
+    Heartbeat         heartbeat          = 21; // story 69
+    PasswordLogin     password_login     = 22; // story 67
+    AcceptInvite      accept_invite      = 23; // story 66
+    SetPassword       set_password       = 24; // story 67
+    CreateInvite      create_invite      = 25; // story 65 (admin)
+    ListInvites       list_invites       = 26; // story 65 (admin)
+    RevokeInvite      revoke_invite      = 27; // story 65 (admin)
+    CreateLoginLink   create_login_link  = 28; // story 68 (admin)
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -202,8 +210,56 @@ message ClientEnvelope {
   }
 }
 
+// Stories 1-2, remplacées par les stories 65-68 : refusé (403) — les liens ne sont
+// plus créés que par l'admin.
 message RequestMagicLink {
   string email = 1;
+}
+
+// Story 69 : « tu es là ? » du client. Réponse : HeartbeatAck.
+message Heartbeat {}
+
+// Story 67. Réponse : AuthResponse, ou 401 « email ou mot de passe incorrect »
+// (429 après 10 échecs sur cet email, pendant 15 min).
+message PasswordLogin {
+  string email = 1;
+  string password = 2;
+}
+
+// Story 66 : création du compte depuis un lien d'invitation. Réponse : AuthResponse.
+message AcceptInvite {
+  string token = 1;
+  string email = 2;
+  string pseudo = 3;
+  string password = 4;
+}
+
+// Story 67 : `current` vide si le compte n'a pas encore de mot de passe. Réponse :
+// PasswordSet.
+message SetPassword {
+  string current = 1;
+  string password = 2;
+}
+
+// Story 65 (admin) : invitation à usage unique, valable `ttl_seconds` (30 jours max).
+// Réponse : InviteCreated.
+message CreateInvite {
+  uint32 ttl_seconds = 1;
+}
+
+// Story 65 (admin). Réponse : Invites.
+message ListInvites {}
+
+// Story 65 (admin). Réponse : InviteRevoked.
+message RevokeInvite {
+  string token = 1;
+}
+
+// Story 68 (admin) : lien de connexion à usage unique pour un membre. Réponse :
+// LoginLinkCreated.
+message CreateLoginLink {
+  uint64 user_id = 1;
+  uint32 ttl_seconds = 2;
 }
 
 message AuthRequest {
@@ -355,6 +411,12 @@ message ServerEnvelope {
     ThemeSet        theme_set         = 18;
     ReadMarked      read_marked       = 19;
     SettingsSet     settings_set      = 20;
+    HeartbeatAck    heartbeat_ack     = 21;
+    PasswordSet     password_set      = 22;
+    InviteCreated   invite_created    = 23;
+    Invites         invites           = 24;
+    InviteRevoked   invite_revoked    = 25;
+    LoginLinkCreated login_link_created = 26;
   }
 }
 
@@ -420,6 +482,35 @@ message UserUpdated {
 // participants (story 29).
 message DmOpened {
   Conversation conversation = 1;
+}
+
+message HeartbeatAck {}
+
+message PasswordSet {}
+
+// Story 65 : lien `{origine}/?invite={token}`.
+message Invite {
+  string token = 1;
+  uint64 created_at = 2; // ms epoch
+  uint64 expires_at = 3; // ms epoch
+}
+
+message InviteCreated {
+  Invite invite = 1;
+}
+
+message Invites {
+  repeated Invite invites = 1; // en cours, de la plus récente à la plus ancienne
+}
+
+message InviteRevoked {
+  string token = 1;
+}
+
+// Story 68 : lien `{origine}/?token={token}` (lien magique, usage unique).
+message LoginLinkCreated {
+  string token = 1;
+  uint64 expires_at = 2;
 }
 
 // Story 56 : à moi et à mes autres connexions seulement.

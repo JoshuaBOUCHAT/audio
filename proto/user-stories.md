@@ -35,6 +35,40 @@ Protobuf qu'elle justifie dans `messages.proto`.
     portée par la connexion elle-même côté serveur (état en mémoire, pas dans
     OxidArt).
 
+**Révision 2026-10-12 (stories 65-68) : comptes à mot de passe, entrée sur invitation.**
+Les stories 1-2 (« j'entre mon email et je reçois un lien ») sont remplacées : on ne
+demande plus soi-même un lien. L'admin crée les liens (invitation pour un nouveau
+compte, lien de connexion de dépannage pour un membre) ; on se connecte ensuite par
+email et mot de passe.
+
+65. En tant qu'admin, je veux créer un **lien d'invitation** à usage unique, avec une
+    durée de validité que je choisis, le copier pour l'envoyer à un ami, voir mes
+    invitations en cours et en révoquer une — dans un onglet **Administration** des
+    paramètres, visible de l'admin seul.
+    **Décisions** : `invite:{token}` avec le TTL natif d'OxidArt (durée choisie,
+    30 jours max) ; consommé à l'inscription. Au premier lancement, si le compte du
+    bootstrap admin (story 3) n'existe pas, le serveur affiche dans la console une
+    invitation pour lui.
+66. En tant qu'invité, je veux ouvrir le lien et **créer mon compte** : email, pseudo,
+    mot de passe ; je suis connecté aussitôt.
+    **Décisions** : email unique (409), pseudo selon la story 34, mot de passe de 8
+    caractères min. Mot de passe haché en **bcrypt coût 6 + pepper** : un hachage
+    léger (~3 ms) pour ne pas figer le serveur single-thread (audio, vidéo), compensé
+    par un secret serveur de 32 octets (`data/pepper`, ou `AUDIO_PEPPER`) mêlé au mot
+    de passe par HMAC-SHA256 avant bcrypt — un dump seul ne permet pas de tester des
+    mots de passe. Hash dans `password:{user}`, jamais dans `User` (qui part au
+    client).
+67. En tant qu'utilisateur, je veux me connecter avec **email et mot de passe**, et
+    définir ou changer mon mot de passe dans mon profil (un compte venu d'un lien
+    magique n'en a pas encore).
+    **Décisions** : erreur unique « email ou mot de passe incorrect » (pas de fuite
+    sur l'existence du compte, un hash factice est vérifié pour un email inconnu) ;
+    **10 échecs** sur un email le bloquent 15 min (TTL OxidArt) — le flow d'auth
+    reste strict (CLAUDE.md). Changer son mot de passe demande l'actuel s'il existe.
+68. En tant qu'admin, je veux créer un **lien de connexion** pour un membre (mot de
+    passe oublié), à usage unique et de durée choisie : c'est le lien magique de la
+    v1, désormais créé par l'admin seulement (`RequestMagicLink` refusé).
+
 ### Salons
 
 7. En tant qu'admin, je veux créer un salon texte avec un nom, afin d'organiser les
@@ -106,6 +140,16 @@ Stories 38-40 numérotées à la suite (convention des stories 28 et 33), ajout�
     conversation repart de sa dernière page (story 15 : modifications et suppressions
     survenues pendant la coupure prises en compte), on remonte à nouveau si besoin.
     Le mode `last_seen_id` (tout ce qui suit) reste disponible.
+
+69. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux qu'une connexion morte
+    (réseau perdu sans fermeture propre) soit détectée vite, des deux côtés : je me
+    reconnecte seul, et je ne reste pas « en ligne » ni dans un futur salon vocal
+    (story 21) chez les autres.
+    **Décisions** : le serveur envoie un ping WebSocket toutes les 15 s à chaque
+    connexion et la ferme sans aucune trame reçue depuis 45 s (le navigateur répond
+    aux pings tout seul, même onglet en arrière-plan). Le client envoie un
+    `Heartbeat` toutes les 20 s quand l'onglet est visible et se reconnecte sans
+    réponse sous 10 s.
 
 ### Résilience (côté produit, pas juste infra)
 

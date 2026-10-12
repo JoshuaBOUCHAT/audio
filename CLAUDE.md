@@ -91,6 +91,13 @@ npx pbts proto/messages.json > proto/messages.d.ts
 
 ## Authentification
 
+> **Révision 2026-10-12 (stories 65-69 de `proto/user-stories.md`)** : comptes à
+> **email + mot de passe** (bcrypt coût 6 + pepper serveur, verrouillage après 10
+> échecs), entrée **sur invitation** créée par l'admin (lien à usage unique, durée
+> choisie, TTL OxidArt) ; le lien magique ne sert plus qu'au dépannage et n'est créé
+> que par l'admin. Les points 1-2 ci-dessous (« n'importe quel email reçoit un lien »)
+> sont remplacés ; le reste (sessions opaques, multi-session, bootstrap admin) tient.
+
 Passwordless par email, décidé pour la v1 :
 
 1. L'utilisateur entre **n'importe quel email** (pas d'allowlist, pas d'inscription
