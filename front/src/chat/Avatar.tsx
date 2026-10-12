@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { cn } from "@/lib/utils"
+import { userColor } from "./model"
 import { isShownOnline, type ChatState, type ChatStore } from "./store"
 
 /** Photo de profil, ou initiale du pseudo sur fond coloré tant qu'il n'y en a pas. */
@@ -29,7 +30,7 @@ export function Avatar({
         "flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full text-sm font-semibold text-white select-none",
         className,
       )}
-      style={{ backgroundColor: `hsl(${(userId * 67) % 360} 45% 45%)` }}
+      style={{ backgroundColor: userColor(userId) }}
       aria-hidden
     >
       {version !== 0 && url ? (
@@ -47,11 +48,14 @@ export function PresenceAvatar({
   state,
   store,
   className,
+  dotClassName,
 }: {
   userId: number
   state: ChatState
   store: ChatStore
   className?: string
+  /** Taille de la pastille, pour les grands avatars (carte de profil). */
+  dotClassName?: string
 }) {
   const online = isShownOnline(state, userId)
   return (
@@ -61,6 +65,7 @@ export function PresenceAvatar({
         className={cn(
           "absolute -right-0.5 -bottom-0.5 size-3.5 rounded-full border-[3px] border-background",
           online ? "bg-emerald-500" : "bg-muted-foreground/50",
+          dotClassName,
         )}
         title={online ? "En ligne" : userId === state.me?.id ? "Invisible" : "Hors ligne"}
       />

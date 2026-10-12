@@ -53,6 +53,11 @@ export function setStatus(status: chat.Status): ClientEnvelopeShape {
   return { payload: "setStatus", setStatus: { status } };
 }
 
+/** Story 43 : vide = retirer la description. */
+export function setBio(bio: string): ClientEnvelopeShape {
+  return { payload: "setBio", setBio: { bio } };
+}
+
 export function setPseudo(pseudo: string): ClientEnvelopeShape {
   return { payload: "setPseudo", setPseudo: { pseudo } };
 }

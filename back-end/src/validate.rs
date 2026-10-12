@@ -134,6 +134,29 @@ pub fn validate_set_pseudo(raw: proto::SetPseudo) -> Result<ValidSetPseudo, prot
     })
 }
 
+pub const MAX_BIO_CHARS: usize = 190;
+
+/// Story 43 : description trimée, ≤ 190 caractères, retours à la ligne permis mais
+/// pas les autres caractères de contrôle. Vide = retirer la description.
+pub struct ValidSetBio {
+    pub bio: String,
+}
+
+pub fn validate_set_bio(raw: proto::SetBio) -> Result<ValidSetBio, proto::Error> {
+    let bio = raw.bio.trim();
+    let invalid = |message: &str| proto::Error {
+        code: 400,
+        message: message.to_string(),
+    };
+    if bio.chars().count() > MAX_BIO_CHARS {
+        return Err(invalid("description trop longue (190 caractères max)"));
+    }
+    if bio.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(invalid("description avec caractère de contrôle"));
+    }
+    Ok(ValidSetBio { bio: bio.to_string() })
+}
+
 /// Story 37 : seule limite de taille métier du système, la photo étant stockée dans
 /// OxidArt et persistée par le snapshot.
 pub const MAX_AVATAR_BYTES: usize = 256 * 1024;
@@ -177,6 +200,21 @@ mod tests {
         validate_set_pseudo(proto::SetPseudo { pseudo: raw.to_string() })
             .map(|v| v.pseudo)
             .map_err(|e| e.code)
+    }
+
+    fn bio(raw: &str) -> Result<String, u32> {
+        validate_set_bio(proto::SetBio { bio: raw.to_string() })
+            .map(|v| v.bio)
+            .map_err(|e| e.code)
+    }
+
+    #[test]
+    fn bio_trimee_bornee_multiligne() {
+        assert_eq!(bio("  salut\nça va  "), Ok("salut\nça va".to_string()));
+        assert_eq!(bio("   "), Ok(String::new()));
+        assert_eq!(bio(&"é".repeat(190)), Ok("é".repeat(190)));
+        assert_eq!(bio(&"é".repeat(191)), Err(400));
+        assert_eq!(bio("a\tb"), Err(400));
     }
 
     #[test]

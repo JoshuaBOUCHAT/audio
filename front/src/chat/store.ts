@@ -18,6 +18,7 @@ import {
   requestMagicLink,
   sendMessage,
   setAvatar,
+  setBio,
   setPseudo,
   setStatus,
   syncRequest,
@@ -358,6 +359,16 @@ export class ChatStore {
     }
   }
 
+  /** Story 43. `true` si acceptée ; sinon l'erreur est dans `error`. */
+  setBio = async (bio: string): Promise<boolean> => {
+    this.set({ error: null })
+    const response = await this.request(setBio(bio))
+    const profile = response?.userUpdated?.profile
+    if (!profile) return false
+    this.applyProfile(toProfile(profile))
+    return true
+  }
+
   /** Story 37 : image déjà réduite (cf. avatar-image.ts) ; vide = retirer la photo. */
   setAvatar = async (image: Uint8Array): Promise<boolean> => {
     this.set({ error: null })
@@ -400,7 +411,7 @@ export class ChatStore {
     const users = { ...this.state.users, [profile.id]: profile }
     const me = this.state.me
     if (me && me.id === profile.id) {
-      const updated = { ...me, pseudo: profile.pseudo, avatarVersion: profile.avatarVersion }
+      const updated = { ...me, pseudo: profile.pseudo, avatarVersion: profile.avatarVersion, bio: profile.bio }
       this.set({ users, me: updated, phase: this.state.phase === "pseudo" ? "ready" : this.state.phase })
     } else {
       this.set({ users })

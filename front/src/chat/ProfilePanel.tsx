@@ -10,6 +10,9 @@ import { Avatar } from "./Avatar"
 import { toAvatarBytes } from "./avatar-image"
 import type { ChatState, ChatStore } from "./store"
 
+/** Story 43, même borne que le serveur (`validate::MAX_BIO_CHARS`). */
+const MAX_BIO_CHARS = 190
+
 export function ProfilePanel({
   state,
   store,
@@ -21,6 +24,7 @@ export function ProfilePanel({
 }) {
   const me = state.me!
   const [pseudo, setPseudo] = useState(me.pseudo)
+  const [bio, setBio] = useState(me.bio)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -119,6 +123,35 @@ export function ProfilePanel({
             <Button type="submit" disabled={busy || pseudo.trim() === me.pseudo}>
               Enregistrer
             </Button>
+          </form>
+
+          <form
+            className="flex flex-col gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void run(() => store.setBio(bio), bio.trim() ? "Description mise à jour." : "Description retirée.")
+            }}
+          >
+            <label htmlFor="bio" className="text-sm font-medium">
+              À propos de moi
+            </label>
+            <textarea
+              id="bio"
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              maxLength={MAX_BIO_CHARS}
+              rows={3}
+              placeholder="Quelques mots sur toi…"
+              className="min-h-20 w-full resize-none rounded-lg border border-input bg-transparent dark:bg-input/30 px-2.5 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {[...bio].length} / {MAX_BIO_CHARS}
+              </span>
+              <Button type="submit" size="sm" disabled={busy || bio.trim() === me.bio}>
+                Enregistrer
+              </Button>
+            </div>
           </form>
 
           <p className="text-xs text-muted-foreground">Connecté avec {me.email} (visible de toi seul).</p>

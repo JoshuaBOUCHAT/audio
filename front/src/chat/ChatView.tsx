@@ -1,6 +1,6 @@
 // Vue principale : colonne de gauche qui bascule entre salons (création si admin,
 // story 7) et conversations privées (stories 28-30), fil de la conversation choisie
-// (`ChannelFeed`), membres à droite (story 23, ouverture d'un DM au clic).
+// (`ChannelFeed`), membres à droite (story 23, carte de profil au clic, story 44).
 
 import { useEffect, useState } from "react"
 import { AtSign, Hash, LogOut, MessageCircle, Plus, Users } from "lucide-react"
@@ -186,7 +186,12 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 
       {membersOpen && (
         <div className="hidden lg:flex">
-          <MembersPanel state={state} store={store} onMessage={(id) => void messageUser(id)} />
+          <MembersPanel
+            state={state}
+            store={store}
+            onMessage={(id) => void messageUser(id)}
+            onEditProfile={() => setProfileOpen(true)}
+          />
         </div>
       )}
 

@@ -13,9 +13,11 @@ export type Me = {
   avatarVersion: number
   /** Story 41 : statut choisi, mémorisé avec le compte. */
   invisible: boolean
+  /** Story 43 : description, vide = aucune. */
+  bio: string
 }
 /** Profil public (story 36) : jamais l'email. `avatarVersion` 0 = pas de photo. */
-export type Profile = { id: number; pseudo: string; avatarVersion: number }
+export type Profile = { id: number; pseudo: string; avatarVersion: number; bio: string }
 export type ChatChannel = { id: number; name: string }
 /** Conversation privée (stories 28-30), vue depuis `me`. */
 export type Conversation = { id: number; otherId: number; lastMessageId: number }
@@ -32,6 +34,11 @@ export type ChatMessage = {
   editedAt: number
 }
 
+/** Couleur stable par utilisateur : fond de l'initiale, bandeau de la carte de profil. */
+export function userColor(userId: number): string {
+  return `hsl(${(userId * 67) % 360} 45% 45%)`
+}
+
 export function toNumber(value: number | Long | null | undefined): number {
   if (value == null) return 0
   return typeof value === "number" ? value : value.toNumber()
@@ -45,6 +52,7 @@ export function toMe(user: chat.IUser | null | undefined): Me {
     pseudo: user?.pseudo ?? "",
     avatarVersion: toNumber(user?.avatarVersion),
     invisible: user?.status === chat.Status.INVISIBLE,
+    bio: user?.bio ?? "",
   }
 }
 
@@ -53,6 +61,7 @@ export function toProfile(profile: chat.IUserProfile): Profile {
     id: toNumber(profile.id),
     pseudo: profile.pseudo ?? "",
     avatarVersion: toNumber(profile.avatarVersion),
+    bio: profile.bio ?? "",
   }
 }
 

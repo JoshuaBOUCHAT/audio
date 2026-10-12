@@ -421,6 +421,10 @@ fn handle_client_envelope(
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SetBio(req)) => match set_bio(req, state, *user_id) {
+            Ok(profile) => user_updated(state, conn, profile),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         Some(Payload::SetAvatar(req)) => match set_avatar(req, state, *user_id) {
             Ok(profile) => user_updated(state, conn, profile),
             Err(err) => proto::server_envelope::Payload::Error(err),
@@ -576,6 +580,7 @@ fn handle_auth(
                     pseudo: String::new(),
                     avatar_version: 0,
                     status: proto::Status::Online as i32,
+                    bio: String::new(),
                 };
                 save_user(&mut art, &user);
                 art.set(
@@ -633,6 +638,7 @@ fn profile(user: &proto::User) -> proto::UserProfile {
         id: user.id,
         pseudo: user.pseudo.clone(),
         avatar_version: user.avatar_version,
+        bio: user.bio.clone(),
     }
 }
 
@@ -721,6 +727,22 @@ fn set_status(
     save_user(&mut art, &user);
     state.dirty.set(true);
     Ok(status)
+}
+
+/// Story 43 : description de profil, diffusée comme un changement de pseudo.
+fn set_bio(
+    req: proto::SetBio,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::UserProfile, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    let valid = validate::validate_set_bio(req)?;
+    let mut art = state.art.borrow_mut();
+    let mut user = require_pseudo(&mut art, user_id)?;
+    user.bio = valid.bio;
+    save_user(&mut art, &user);
+    state.dirty.set(true);
+    Ok(profile(&user))
 }
 
 /// Story 37 : nouvelle photo (version = id tiré du compteur global, change à chaque
