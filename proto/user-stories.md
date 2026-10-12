@@ -65,6 +65,37 @@ Protobuf qu'elle justifie dans `messages.proto`.
     `last_seen_id` n'est pas renvoyée — à traiter (ex. id de suppression tiré du
     compteur global + index des tombstones) si la resync complète devient trop lourde.
 
+Stories 38-40 numérotées à la suite (convention des stories 28 et 33), ajoutées le
+2026-10-12 :
+
+38. En tant qu'utilisateur, je veux confirmer une suppression de message dans une
+    fenêtre (« Supprimer ce message ? », aperçu du message, Annuler / Supprimer), pour
+    ne pas supprimer par erreur — la suppression est définitive. Détail client
+    uniquement, aucun impact protocole.
+39. En tant qu'utilisateur, je veux répondre à un message précis : ma réponse affiche
+    au-dessus d'elle l'auteur et le début du message cité ; cliquer sur cet extrait
+    fait défiler jusqu'au message d'origine, qui se colore brièvement puis revient à
+    la normale (fondu) pour attirer l'œil.
+    **Décisions** : la réponse porte l'id du message cité (`reply_to_id`), le serveur
+    vérifie qu'il existe dans le **même salon** (404 sinon). L'extrait n'est pas copié
+    dans la réponse : le client le lit dans le message d'origine qu'il a déjà, donc
+    une modification (story 40) ou une suppression de l'original se reflète dans la
+    citation (« message supprimé »). Tant que la sync renvoie tout le salon, l'original
+    est toujours chargé ; la future pagination devra charger l'original absent au
+    clic (« message d'origine non chargé » d'ici là).
+40. En tant qu'auteur d'un message, je veux le modifier comme si je l'écrivais : le
+    texte repasse dans la barre de saisie, l'interface montre clairement que je suis
+    en train de **modifier** (et non d'envoyer un nouveau message) et permet
+    d'annuler ; les autres voient la modification en temps réel, et un message
+    modifié porte une mention discrète « (modifié) ».
+    **Décisions** : modification par l'**auteur uniquement** (pas l'admin, contrairement
+    à la suppression — l'admin ne doit pas pouvoir faire dire quelque chose à
+    quelqu'un) ; pas de modification d'un message supprimé ; mêmes règles de contenu
+    qu'à l'envoi (non vide). Pas d'historique des versions : seul le dernier contenu
+    et la date de dernière modification (`edited_at`) sont gardés, même logique que
+    les tombstones (story 13). Une modification faite pendant qu'un client était hors
+    ligne lui parvient par la resync complète (story 15).
+
 ### Résilience (côté produit, pas juste infra)
 
 16. En tant qu'admin, je veux que le serveur redémarre automatiquement après un

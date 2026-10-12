@@ -147,7 +147,9 @@ Opérations messages v1 :
   **Droit de suppression** : l'auteur du message, ou l'admin (l'admin peut supprimer
   n'importe quel message, pas seulement les siens — évite les blocages/quiproquos
   quand la personne concernée n'est pas joignable).
-- Pas d'édition de message en v1.
+- Édition par l'auteur seul, mention « (modifié) », pas d'historique (story 40,
+  ajoutée le 2026-10-12 — remplace « pas d'édition en v1 »). Réponse à un message
+  (story 39).
 - Pas de présence (online/offline/typing) en v1.
 - Pas de pièces jointes/images en v1.
 

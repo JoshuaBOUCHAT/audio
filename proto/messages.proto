@@ -54,6 +54,8 @@ message Message {
   // Tombstone (story 13-15). Si true, "content" est vide et doit être ignoré
   // côté client — seule la suppression elle-même doit être reflétée.
   bool deleted = 6;
+  uint64 reply_to_id = 7; // story 39 : message cité, même salon ; 0 = pas une réponse
+  uint64 edited_at = 8;   // story 40 : ms epoch de la dernière modification ; 0 = jamais
 }
 
 // ═══════════════════════════════════
@@ -72,6 +74,7 @@ message ClientEnvelope {
     SetPseudo         set_pseudo         = 8; // stories 34-35
     SetAvatar         set_avatar         = 9; // story 37
     GetAvatar         get_avatar         = 10; // story 36
+    EditMessage       edit_message       = 11; // story 40
 
     WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
 
@@ -97,6 +100,15 @@ message AuthRequest {
 message SendMessage {
   uint64 channel_id = 1;
   string content = 2;
+  uint64 reply_to_id = 3; // story 39 ; 0 = pas une réponse. 404 si absent du salon
+}
+
+// Story 40. Auteur uniquement (403), pas sur un message supprimé (400). Réponse :
+// MessageEdited (aussi diffusé).
+message EditMessage {
+  uint64 channel_id = 1;
+  uint64 message_id = 2;
+  string content = 3;
 }
 
 message DeleteMessage {
@@ -155,6 +167,7 @@ message ServerEnvelope {
     Error           error             = 8;
     UserUpdated     user_updated      = 9;
     Avatar          avatar            = 10;
+    MessageEdited   message_edited    = 11;
   }
 }
 
@@ -176,6 +189,11 @@ message AuthResponse {
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
 // côté client (voir décision de conception dans user-stories.md).
 message NewMessage {
+  Message message = 1;
+}
+
+// Story 40 : message complet après modification (broadcast, comme NewMessage).
+message MessageEdited {
   Message message = 1;
 }
 
