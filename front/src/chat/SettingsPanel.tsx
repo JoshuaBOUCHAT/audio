@@ -2,11 +2,9 @@
 // extensible (vidéo, audio…). Chaque onglet est une section indépendante.
 
 import { useEffect, useState } from "react"
-import { Bell, BellOff, Hash, Monitor, Moon, Palette, Play, Sun, User, Volume2, VolumeX, X } from "lucide-react"
+import { Bell, BellOff, Monitor, Moon, Palette, Play, Sun, User, VolumeX, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { PresenceAvatar } from "./Avatar"
-import type { NotifyRule } from "./model"
 import { ProfileSettings } from "./ProfileSettings"
 import { playSound, SOUNDS } from "./sounds"
 import type { ChatState, ChatStore } from "./store"
@@ -122,11 +120,12 @@ function NotificationSettings({ state, store }: { state: ChatState; store: ChatS
   const [permission, setPermission] = useState(() =>
     "Notification" in window ? Notification.permission : ("unsupported" as const),
   )
-  const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
   const update = (patch: Partial<typeof settings>) => void store.setNotifySettings({ ...settings, ...patch })
-  const setRule = (id: number, rule: NotifyRule) => update({ rules: { ...settings.rules, [id]: rule } })
+  const others = Object.values(state.users).filter((u) => u.id !== state.me?.id)
   const allMuted =
-    [...state.channels, ...state.dms].length > 0 && [...state.channels, ...state.dms].every((c) => settings.rules[c.id]?.muted)
+    state.channels.every((c) => store.channelRule(c.id).level === "nothing") &&
+    others.every((u) => store.personRule(u.id).dmMuted && store.personRule(u.id).mentionsMuted) &&
+    state.channels.length + others.length > 0
 
   async function toggleDesktop() {
     if (settings.desktop) return update({ desktop: false })
@@ -186,92 +185,23 @@ function NotificationSettings({ state, store }: { state: ChatState; store: ChatS
       </section>
 
       <section className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Par conversation</h3>
+        <h3 className="text-sm font-medium">Par salon et par personne</h3>
+        <p className="text-xs text-muted-foreground">
+          Clic droit sur une personne (liste Privé, membres) ou sur un salon — ou son bouton 🔔 — pour régler ses
+          notifications : salon (tous les messages, mentions seulement, rien ; son), personne (ses messages privés et ses
+          mentions de toi ; son). Par défaut : chaque message privé, les mentions de toi dans les salons.
+        </p>
+        <div>
           <Button variant="outline" size="sm" onClick={() => void store.muteAll(!allMuted)}>
             {allMuted ? <Bell /> : <BellOff />}
             {allMuted ? "Tout réactiver" : "Tout couper"}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          « Tout couper » coupe chaque conversation une par une : tu peux ensuite en réactiver une seule.
+          « Tout couper » règle chaque salon sur « rien » et chaque personne sur « ne pas notifier », un par un : tu peux
+          ensuite n'en réactiver qu'un.
         </p>
-        <RuleList title="Salons">
-          {state.channels.map((c) => (
-            <RuleRow
-              key={c.id}
-              icon={<Hash className="size-4 text-muted-foreground" />}
-              label={c.name}
-              rule={settings.rules[c.id]}
-              onChange={(rule) => setRule(c.id, rule)}
-            />
-          ))}
-        </RuleList>
-        <RuleList title="Personnes">
-          {state.dms.map((d) => (
-            <RuleRow
-              key={d.id}
-              icon={<PresenceAvatar userId={d.otherId} state={state} store={store} className="size-6 text-xs" dotClassName="size-2.5 border-2" />}
-              label={pseudoOf(d.otherId)}
-              rule={settings.rules[d.id]}
-              onChange={(rule) => setRule(d.id, rule)}
-            />
-          ))}
-          {state.dms.length === 0 && (
-            <p className="px-2 py-1 text-xs text-muted-foreground">Aucune conversation privée.</p>
-          )}
-        </RuleList>
       </section>
     </div>
-  )
-}
-
-function RuleList({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-lg border">
-      <div className="border-b px-3 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{title}</div>
-      <ul className="divide-y">{children}</ul>
-    </div>
-  )
-}
-
-/** Story 58 : deux interrupteurs — notifications (son et popup), et son seul. */
-function RuleRow({
-  icon,
-  label,
-  rule,
-  onChange,
-}: {
-  icon: React.ReactNode
-  label: string
-  rule: NotifyRule | undefined
-  onChange: (rule: NotifyRule) => void
-}) {
-  const muted = rule?.muted ?? false
-  const silent = rule?.silent ?? false
-  return (
-    <li className="flex items-center gap-2.5 px-3 py-1.5">
-      {icon}
-      <span className={cn("min-w-0 flex-1 truncate text-sm", muted && "text-muted-foreground")}>{label}</span>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        onClick={() => onChange({ muted: !muted, silent })}
-        title={muted ? "Réactiver les notifications" : "Couper les notifications"}
-        aria-pressed={!muted}
-      >
-        {muted ? <BellOff className="text-muted-foreground" /> : <Bell />}
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        disabled={muted}
-        onClick={() => onChange({ muted, silent: !silent })}
-        title={silent ? "Réactiver le son" : "Couper le son"}
-        aria-pressed={!silent}
-      >
-        {silent || muted ? <VolumeX className="text-muted-foreground" /> : <Volume2 />}
-      </Button>
-    </li>
   )
 }

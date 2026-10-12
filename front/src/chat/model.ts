@@ -114,31 +114,57 @@ export function byLastActivity(a: Conversation, b: Conversation): number {
   return Math.max(b.lastMessageId, b.id) - Math.max(a.lastMessageId, a.id)
 }
 
-/** Stories 57-60 : réglages de notification, mémorisés avec le compte. */
+/** Stories 57-63 : réglages de notification, mémorisés avec le compte. */
 export type NotifySettings = {
   /** Id d'un son de `sounds.ts`, "" = aucun. */
   sound: string
   desktop: boolean
-  /** Story 58 : par conversation ; absente = tout activé. */
-  rules: Record<number, NotifyRule>
+  /** Story 63 : par salon ; absent = mentions seulement, avec son. */
+  channels: Record<number, ChannelRule>
+  /** Story 63 : par personne ; absent = tout notifier, avec son. */
+  persons: Record<number, PersonRule>
 }
-export type NotifyRule = { muted: boolean; silent: boolean }
+export type ChannelLevel = "mentions" | "all" | "nothing"
+export type ChannelRule = { level: ChannelLevel; silent: boolean }
+export type PersonRule = { dmMuted: boolean; dmSilent: boolean; mentionsMuted: boolean; mentionsSilent: boolean }
+
+export const DEFAULT_CHANNEL_RULE: ChannelRule = { level: "mentions", silent: false }
+export const DEFAULT_PERSON_RULE: PersonRule = { dmMuted: false, dmSilent: false, mentionsMuted: false, mentionsSilent: false }
+
+const LEVELS: Record<chat.ChannelLevel, ChannelLevel> = {
+  [chat.ChannelLevel.MENTIONS]: "mentions",
+  [chat.ChannelLevel.ALL]: "all",
+  [chat.ChannelLevel.NOTHING]: "nothing",
+}
 
 export function toNotifySettings(settings: chat.ISettings | null | undefined): NotifySettings {
-  const rules: Record<number, NotifyRule> = {}
-  for (const r of settings?.rules ?? []) {
-    rules[toNumber(r.channelId)] = { muted: r.muted ?? false, silent: r.silent ?? false }
+  const channels: Record<number, ChannelRule> = {}
+  for (const r of settings?.channelRules ?? []) {
+    channels[toNumber(r.channelId)] = { level: LEVELS[r.level ?? 0] ?? "mentions", silent: r.silent ?? false }
   }
-  return { sound: settings?.sound ?? "pop", desktop: settings?.desktopNotifications ?? false, rules }
+  const persons: Record<number, PersonRule> = {}
+  for (const r of settings?.personRules ?? []) {
+    persons[toNumber(r.userId)] = {
+      dmMuted: r.dmMuted ?? false,
+      dmSilent: r.dmSilent ?? false,
+      mentionsMuted: r.mentionsMuted ?? false,
+      mentionsSilent: r.mentionsSilent ?? false,
+    }
+  }
+  return { sound: settings?.sound ?? "pop", desktop: settings?.desktopNotifications ?? false, channels, persons }
 }
 
 export function fromNotifySettings(settings: NotifySettings): chat.Settings.$Properties {
+  const level = { mentions: chat.ChannelLevel.MENTIONS, all: chat.ChannelLevel.ALL, nothing: chat.ChannelLevel.NOTHING }
   return {
     sound: settings.sound,
     desktopNotifications: settings.desktop,
-    rules: Object.entries(settings.rules)
-      .filter(([, r]) => r.muted || r.silent)
-      .map(([id, r]) => ({ channelId: Number(id), muted: r.muted, silent: r.silent })),
+    channelRules: Object.entries(settings.channels).map(([id, r]) => ({
+      channelId: Number(id),
+      level: level[r.level],
+      silent: r.silent,
+    })),
+    personRules: Object.entries(settings.persons).map(([id, r]) => ({ userId: Number(id), ...r })),
   }
 }
 

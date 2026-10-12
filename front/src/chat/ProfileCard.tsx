@@ -7,6 +7,7 @@ import { MessageCircle, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { PresenceAvatar } from "./Avatar"
 import { userColor } from "./model"
+import { PersonNotifyOptions } from "./NotifyMenus"
 import { isShownOnline, type ChatState, type ChatStore } from "./store"
 
 const MARGIN = 8
@@ -91,6 +92,17 @@ export function ProfileCard({
             </h3>
             <p className="text-sm whitespace-pre-wrap break-words">{profile.bio}</p>
           </section>
+        )}
+
+        {!self && (
+          <details className="mt-3 rounded-lg border">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase select-none">
+              Notifications
+            </summary>
+            <div className="px-1 pb-1">
+              <PersonNotifyOptions userId={userId} state={state} store={store} />
+            </div>
+          </details>
         )}
 
         {self ? (

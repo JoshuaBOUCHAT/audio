@@ -96,13 +96,13 @@ pub fn settings(art: &mut OxidArt, user_id: u64) -> proto::Settings {
         .map(|v| codec::decode(v.as_bytes().expect("settings toujours Value::String").as_slice(), "settings"))
         .unwrap_or_else(|| proto::Settings {
             sound: "pop".to_string(),
-            desktop_notifications: false,
-            rules: Vec::new(),
+            ..Default::default()
         })
 }
 
-/// Stories 57-60 : remplace les réglages. Une règle par conversation (la dernière
-/// l'emporte), les règles sans effet (ni coupée ni silencieuse) sont retirées.
+/// Stories 57-63 : remplace les réglages. Une règle par salon et par personne (la
+/// dernière l'emporte) ; les règles égales au défaut sont retirées ; l'ancien `rules`
+/// (story 58) est vidé.
 pub fn set_settings(art: &mut OxidArt, user_id: u64, mut settings: proto::Settings) -> Result<proto::Settings, proto::Error> {
     let invalid = |message: &str| proto::Error {
         code: 400,
@@ -111,17 +111,29 @@ pub fn set_settings(art: &mut OxidArt, user_id: u64, mut settings: proto::Settin
     if settings.sound.len() > MAX_SOUND_LEN || settings.sound.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-') {
         return Err(invalid("son inconnu"));
     }
-    if settings.rules.len() > MAX_RULES {
+    if settings.channel_rules.len() + settings.person_rules.len() > MAX_RULES {
         return Err(invalid("trop de règles de notification"));
     }
-    let mut rules: Vec<proto::NotificationRule> = Vec::new();
-    for rule in settings.rules.drain(..) {
-        rules.retain(|r| r.channel_id != rule.channel_id);
-        if rule.muted || rule.silent {
-            rules.push(rule);
+    if settings.channel_rules.iter().any(|r| proto::ChannelLevel::try_from(r.level).is_err()) {
+        return Err(invalid("niveau de notification inconnu"));
+    }
+    settings.rules.clear();
+    let mut channels: Vec<proto::ChannelRule> = Vec::new();
+    for rule in settings.channel_rules.drain(..) {
+        channels.retain(|r| r.channel_id != rule.channel_id);
+        if rule.level() != proto::ChannelLevel::Mentions || rule.silent {
+            channels.push(rule);
         }
     }
-    settings.rules = rules;
+    settings.channel_rules = channels;
+    let mut persons: Vec<proto::PersonRule> = Vec::new();
+    for rule in settings.person_rules.drain(..) {
+        persons.retain(|r| r.user_id != rule.user_id);
+        if rule.dm_muted || rule.dm_silent || rule.mentions_muted || rule.mentions_silent {
+            persons.push(rule);
+        }
+    }
+    settings.person_rules = persons;
     art.set(
         SharedByte::from_str(&settings_key(user_id)),
         Value::String(SharedByte::from_slice(codec::encode(&settings))),
@@ -204,20 +216,42 @@ mod tests {
     fn reglages_dedupliques_et_valides() {
         let mut art = OxidArt::new();
         assert_eq!(settings(&mut art, 1).sound, "pop");
-        let rule = |channel_id, muted, silent| proto::NotificationRule { channel_id, muted, silent };
+        let channel = |channel_id, level: proto::ChannelLevel, silent| proto::ChannelRule {
+            channel_id,
+            level: level as i32,
+            silent,
+        };
+        let person = |user_id, dm_muted| proto::PersonRule {
+            user_id,
+            dm_muted,
+            ..Default::default()
+        };
         let saved = set_settings(
             &mut art,
             1,
             proto::Settings {
                 sound: "ding".into(),
                 desktop_notifications: true,
-                rules: vec![rule(2, true, false), rule(3, false, false), rule(2, false, true)],
+                rules: vec![proto::NotificationRule { channel_id: 9, muted: true, silent: false }],
+                channel_rules: vec![
+                    channel(2, proto::ChannelLevel::Nothing, false),
+                    channel(3, proto::ChannelLevel::Mentions, false),
+                    channel(2, proto::ChannelLevel::All, true),
+                ],
+                person_rules: vec![person(5, true), person(6, false)],
             },
         )
         .unwrap();
-        assert_eq!(saved.rules, vec![rule(2, false, true)]);
+        assert_eq!(saved.channel_rules, vec![channel(2, proto::ChannelLevel::All, true)]);
+        assert_eq!(saved.person_rules, vec![person(5, true)]);
+        assert!(saved.rules.is_empty(), "ancien format vidé");
         assert_eq!(settings(&mut art, 1), saved);
-        let bad = proto::Settings { sound: "../x".into(), ..saved };
+        let bad = proto::Settings { sound: "../x".into(), ..saved.clone() };
         assert!(set_settings(&mut art, 1, bad).is_err());
+        let bad_level = proto::Settings {
+            channel_rules: vec![proto::ChannelRule { channel_id: 2, level: 42, silent: false }],
+            ..saved
+        };
+        assert!(set_settings(&mut art, 1, bad_level).is_err());
     }
 }

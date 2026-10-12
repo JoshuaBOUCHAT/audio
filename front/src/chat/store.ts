@@ -35,6 +35,8 @@ import {
   isTextChannel,
   mergeMessages,
   toChannel,
+  DEFAULT_CHANNEL_RULE,
+  DEFAULT_PERSON_RULE,
   fromNotifySettings,
   fromThemeChoice,
   toConversation,
@@ -50,7 +52,9 @@ import {
   type Conversation,
   type Me,
   type MediaInfo,
+  type ChannelRule,
   type NotifySettings,
+  type PersonRule,
   type Profile,
 } from "./model"
 import { applyTheme, type ThemeChoice } from "@/lib/theme"
@@ -114,7 +118,7 @@ const INITIAL: ChatState = {
   online: new Set(),
   media: {},
   unread: {},
-  settings: { sound: "pop", desktop: false, rules: {} },
+  settings: { sound: "pop", desktop: false, channels: {}, persons: {} },
   toast: null,
   avatars: {},
   messages: {},
@@ -602,7 +606,24 @@ export class ChatStore {
    * salons (story 62), tous les non-lus pour les DM.
    */
   badgeTotal = (ids: number[], kind: "mentions" | "count"): number =>
-    ids.reduce((n, id) => n + (this.state.settings.rules[id]?.muted ? 0 : (this.state.unread[id]?.[kind] ?? 0)), 0)
+    ids.reduce((n, id) => n + (this.isMuted(id) ? 0 : (this.state.unread[id]?.[kind] ?? 0)), 0)
+
+  /** Story 63 : salon réglé sur « rien », ou DM d'une personne dont les messages ne notifient pas. */
+  isMuted = (conversationId: number): boolean => {
+    const { channels, persons } = this.state.settings
+    if (this.state.channels.some((c) => c.id === conversationId)) return channels[conversationId]?.level === "nothing"
+    const dm = this.state.dms.find((d) => d.id === conversationId)
+    return dm ? (persons[dm.otherId]?.dmMuted ?? false) : false
+  }
+
+  channelRule = (channelId: number): ChannelRule => this.state.settings.channels[channelId] ?? DEFAULT_CHANNEL_RULE
+  personRule = (userId: number): PersonRule => this.state.settings.persons[userId] ?? DEFAULT_PERSON_RULE
+
+  setChannelRule = (channelId: number, rule: ChannelRule): Promise<void> =>
+    this.setNotifySettings({ ...this.state.settings, channels: { ...this.state.settings.channels, [channelId]: rule } })
+
+  setPersonRule = (userId: number, rule: PersonRule): Promise<void> =>
+    this.setNotifySettings({ ...this.state.settings, persons: { ...this.state.settings.persons, [userId]: rule } })
 
   setNotifySettings = async (settings: NotifySettings): Promise<void> => {
     this.set({ settings })
@@ -610,15 +631,22 @@ export class ChatStore {
   }
 
   /**
-   * Story 58 : « Tout couper » règle chaque conversation, une par une — on peut
-   * ensuite n'en réactiver qu'une. `false` retire toutes les règles.
+   * Story 63 : « Tout couper » règle chaque salon sur « rien » et chaque personne sur
+   * « ne pas notifier », un par un — on peut ensuite n'en réactiver qu'un. `false`
+   * retire toutes les règles.
    */
   muteAll = (muted: boolean): Promise<void> => {
-    const rules: NotifySettings["rules"] = {}
+    const channels: NotifySettings["channels"] = {}
+    const persons: NotifySettings["persons"] = {}
     if (muted) {
-      for (const { id } of [...this.state.channels, ...this.state.dms]) rules[id] = { muted: true, silent: false }
+      for (const { id } of this.state.channels) channels[id] = { level: "nothing", silent: false }
+      for (const user of Object.values(this.state.users)) {
+        if (user.id !== this.state.me?.id) {
+          persons[user.id] = { dmMuted: true, dmSilent: false, mentionsMuted: true, mentionsSilent: false }
+        }
+      }
     }
-    return this.setNotifySettings({ ...this.state.settings, rules })
+    return this.setNotifySettings({ ...this.state.settings, channels, persons })
   }
 
   /** Message d'un autre reçu en direct : non-lu ou lu, son, popup système. */
@@ -641,13 +669,22 @@ export class ChatStore {
       }
       this.set({ unread: { ...this.state.unread, [id]: next } })
     }
-    const rule = this.state.settings.rules[id]
-    if (rule?.muted) return
-    // Story 62 : un salon ne notifie que sur mention de moi ; un DM, toujours.
-    const isDm = this.state.dms.some((d) => d.id === id)
-    if (!isDm && !mentioned) return
+    // Story 63 : DM = réglage de la personne ; salon = niveau du salon, et pour une
+    // mention, l'accord de la personne aussi.
+    const person = this.personRule(message.userId)
+    let notify: boolean
+    let withSound: boolean
+    if (this.state.dms.some((d) => d.id === id)) {
+      notify = !person.dmMuted
+      withSound = !person.dmSilent
+    } else {
+      const channel = this.channelRule(id)
+      notify = channel.level !== "nothing" && (mentioned ? !person.mentionsMuted : channel.level === "all")
+      withSound = !channel.silent && (!mentioned || !person.mentionsSilent)
+    }
+    if (!notify) return
     const { sound, desktop } = this.state.settings
-    if (sound && !rule?.silent && Date.now() - this.lastSound > 1000) {
+    if (sound && withSound && Date.now() - this.lastSound > 1000) {
       this.lastSound = Date.now()
       playSound(sound)
     }

@@ -3,7 +3,7 @@
 // (`ChannelFeed`), membres à droite (story 23, carte de profil au clic, story 44).
 
 import { useEffect, useState } from "react"
-import { AtSign, Hash, LogOut, MessageCircle, Moon, Plus, Settings, Sun, Users } from "lucide-react"
+import { AtSign, Bell, BellOff, Hash, LogOut, MessageCircle, Moon, Plus, Settings, Sun, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { resolvedTheme } from "@/lib/theme"
@@ -12,6 +12,7 @@ import { PresenceAvatar } from "./Avatar"
 import { MembersPanel } from "./MembersPanel"
 import { ChannelFeed } from "./ChannelFeed"
 import { byLastActivity } from "./model"
+import { ChannelMenu, PersonMenu } from "./NotifyMenus"
 import { SettingsPanel, type SettingsTab } from "./SettingsPanel"
 import type { ChatState, ChatStore } from "./store"
 
@@ -39,6 +40,10 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
   const [selectedChannel, setSelectedChannel] = useState<number | null>(null)
   const [selectedDm, setSelectedDm] = useState<number | null>(null)
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null)
+  // Story 63 : menu de notification ouvert (clic droit, bouton 🔔).
+  const [menu, setMenu] = useState<
+    { kind: "person"; userId: number; x: number; y: number } | { kind: "channel"; channelId: number; x: number; y: number } | null
+  >(null)
   const [membersOpen, setMembersOpen] = useState(true)
   const me = state.me!
   const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
@@ -82,7 +87,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     document.title = total > 0 ? `(${total > 99 ? "99+" : total}) ${BASE_TITLE}` : BASE_TITLE
   }, [channelUnread, dmUnread])
   const badge = (id: number, kind: "mentions" | "count") => (
-    <UnreadBadge count={state.unread[id]?.[kind] ?? 0} muted={state.settings.rules[id]?.muted ?? false} />
+    <UnreadBadge count={state.unread[id]?.[kind] ?? 0} muted={store.isMuted(id)} />
   )
 
   // Story 28 : ouvrir un DM depuis la liste des membres bascule dessus.
@@ -123,21 +128,52 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
           {view === "channels" ? (
             <>
               {state.channels.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setSelectedChannel(c.id)}
-                  className={cn(
-                    "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
-                    c.id === channel?.id && "bg-muted font-medium text-foreground",
-                  )}
-                >
-                  <Hash className="size-4 shrink-0" />
-                  <span className={cn("truncate", (state.unread[c.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
-                    {c.name}
-                  </span>
-                  {badge(c.id, "mentions")}
-                </button>
+                <div key={c.id} className="group/channel relative">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedChannel(c.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setMenu({ kind: "channel", channelId: c.id, x: e.clientX, y: e.clientY })
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-1.5 rounded-md py-1.5 pr-8 pl-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                      c.id === channel?.id && "bg-muted font-medium text-foreground",
+                    )}
+                  >
+                    <Hash className="size-4 shrink-0" />
+                    <span
+                      className={cn(
+                        "truncate",
+                        (state.unread[c.id]?.count ?? 0) > 0 && !store.isMuted(c.id) && "font-semibold text-foreground",
+                      )}
+                    >
+                      {c.name}
+                    </span>
+                    {badge(c.id, "mentions")}
+                  </button>
+                  {/* Story 63 : réglage du salon ; visible au survol, ou s'il n'est pas au défaut. */}
+                  <button
+                    type="button"
+                    title="Notifications du salon"
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect()
+                      setMenu({ kind: "channel", channelId: c.id, x: r.right + 4, y: r.top })
+                    }}
+                    className={cn(
+                      "absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground",
+                      store.channelRule(c.id).level === "mentions" && !store.channelRule(c.id).silent
+                        ? "invisible group-hover/channel:visible"
+                        : "visible",
+                    )}
+                  >
+                    {store.channelRule(c.id).level === "nothing" ? (
+                      <BellOff className="size-3.5" />
+                    ) : (
+                      <Bell className="size-3.5" />
+                    )}
+                  </button>
+                </div>
               ))}
               {state.channels.length === 0 && (
                 <p className="px-2 text-sm text-muted-foreground">
@@ -152,15 +188,25 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   key={d.id}
                   type="button"
                   onClick={() => setSelectedDm(d.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setMenu({ kind: "person", userId: d.otherId, x: e.clientX, y: e.clientY })
+                  }}
                   className={cn(
                     "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
                     d.id === dm?.id && "bg-muted font-medium text-foreground",
                   )}
                 >
                   <PresenceAvatar userId={d.otherId} state={state} store={store} className="size-8" />
-                  <span className={cn("truncate", (state.unread[d.id]?.count ?? 0) > 0 && "font-semibold text-foreground")}>
+                  <span
+                    className={cn(
+                      "truncate",
+                      (state.unread[d.id]?.count ?? 0) > 0 && !store.isMuted(d.id) && "font-semibold text-foreground",
+                    )}
+                  >
                     {pseudoOf(d.otherId)}
                   </span>
+                  {store.isMuted(d.id) && <BellOff className="size-3.5 shrink-0 text-muted-foreground" />}
                   {badge(d.id, "count")}
                 </button>
               ))}
@@ -264,6 +310,13 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 
       {settingsTab && (
         <SettingsPanel state={state} store={store} initialTab={settingsTab} onClose={() => setSettingsTab(null)} />
+      )}
+
+      {menu?.kind === "person" && (
+        <PersonMenu userId={menu.userId} x={menu.x} y={menu.y} state={state} store={store} onClose={() => setMenu(null)} />
+      )}
+      {menu?.kind === "channel" && (
+        <ChannelMenu channelId={menu.channelId} x={menu.x} y={menu.y} state={state} store={store} onClose={() => setMenu(null)} />
       )}
 
       {state.toast && (

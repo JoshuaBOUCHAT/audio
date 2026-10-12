@@ -1,12 +1,13 @@
 // Story 23 : membres à droite, « En ligne — N » puis « Hors ligne — N », triés par
 // pseudo. Hors ligne inclut les invisibles (indiscernables, story 41) ; soi-même suit
-// son propre statut. Cliquer sur un membre ouvre sa carte de profil (story 44), d'où
-// on lui écrit en privé (story 28).
+// son propre statut. Clic : sa carte de profil (story 44), d'où
+// on lui écrit en privé (story 28) ; clic droit : ses notifications (story 63).
 
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { PresenceAvatar } from "./Avatar"
 import type { Profile } from "./model"
+import { PersonMenu } from "./NotifyMenus"
 import { ProfileCard } from "./ProfileCard"
 import { isShownOnline, type ChatState, type ChatStore } from "./store"
 
@@ -24,6 +25,8 @@ export function MembersPanel({
   onEditProfile: () => void
 }) {
   const [card, setCard] = useState<{ userId: number; anchor: HTMLElement } | null>(null)
+  // Story 63 : clic droit sur un membre → ses réglages de notification.
+  const [menu, setMenu] = useState<{ userId: number; x: number; y: number } | null>(null)
   const members = Object.values(state.users).filter((u) => u.pseudo).sort(byPseudo)
   const online = members.filter((u) => isShownOnline(state, u.id))
   const offline = members.filter((u) => !isShownOnline(state, u.id))
@@ -33,7 +36,15 @@ export function MembersPanel({
 
   return (
     <aside className="w-60 shrink-0 overflow-y-auto border-l bg-muted/40 p-2">
-      <Group title="En ligne" members={online} state={state} store={store} selected={card?.userId} onSelect={select} />
+      <Group
+        title="En ligne"
+        members={online}
+        state={state}
+        store={store}
+        selected={card?.userId}
+        onSelect={select}
+        onMenu={(userId, x, y) => setMenu({ userId, x, y })}
+      />
       <Group
         title="Hors ligne"
         members={offline}
@@ -41,8 +52,20 @@ export function MembersPanel({
         store={store}
         selected={card?.userId}
         onSelect={select}
+        onMenu={(userId, x, y) => setMenu({ userId, x, y })}
         dimmed
       />
+      {menu && (
+        <PersonMenu
+          userId={menu.userId}
+          x={menu.x}
+          y={menu.y}
+          state={state}
+          store={store}
+          onClose={() => setMenu(null)}
+          onMessage={onMessage}
+        />
+      )}
       {card && (
         <ProfileCard
           userId={card.userId}
@@ -65,6 +88,7 @@ function Group({
   store,
   selected,
   onSelect,
+  onMenu,
   dimmed = false,
 }: {
   title: string
@@ -73,6 +97,7 @@ function Group({
   store: ChatStore
   selected: number | undefined
   onSelect: (userId: number, anchor: HTMLElement) => void
+  onMenu: (userId: number, x: number, y: number) => void
   dimmed?: boolean
 }) {
   if (members.length === 0) return null
@@ -87,6 +112,11 @@ function Group({
             <button
               type="button"
               onClick={(e) => onSelect(u.id, e.currentTarget)}
+              onContextMenu={(e) => {
+                if (u.id === state.me?.id) return
+                e.preventDefault()
+                onMenu(u.id, e.clientX, e.clientY)
+              }}
               aria-expanded={selected === u.id}
               title={`Profil de ${u.pseudo}`}
               className={cn(

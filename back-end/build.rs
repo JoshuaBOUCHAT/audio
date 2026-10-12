@@ -24,6 +24,14 @@ fn main() {
             "chat.NotificationRule",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
+        .type_attribute(
+            "chat.ChannelRule",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "chat.PersonRule",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
         .compile_protos(&["../proto/messages.proto"], &["../proto/"])
         .unwrap();
 }
