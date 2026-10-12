@@ -236,6 +236,18 @@ Ajoutées le 2026-10-12 (51-53), dans la continuité des images (§ Images).
     vérification de ce qui a déjà été téléchargé par checksum (le serveur connaît déjà
     le SHA-256 de chaque fichier).
 
+54. *(ajoutée le 2026-10-12)* En tant qu'utilisateur, je veux lire une vidéo
+    directement dans la conversation (lecteur intégré, déplacement dans la
+    timeline, plein écran), sans la télécharger d'abord.
+    **Décisions** : vidéos reconnues à leurs octets magiques (MP4/MOV `ftyp`,
+    WebM/Matroska EBML), comme les images (story 47). Le lecteur du navigateur ne
+    porte pas de token et lit par morceaux : le serveur gère les requêtes `Range`
+    (206, une plage par requête — utile aussi pour la reprise de téléchargement, story
+    53) et l'app demande un **ticket de lecture** (même mécanisme que le ticket de
+    téléchargement, mais servi en ligne et valable 1 h, prolongé à chaque requête : une
+    vidéo en pause ne coupe pas). Format que le navigateur ne sait pas lire (HEVC,
+    certains MKV) : retour à la carte fichier avec téléchargement.
+
 ### Présence
 
 Remontée en v1 le 2026-10-12 (story 23, jusque-là post-v1) ; 41-42 à la suite.
