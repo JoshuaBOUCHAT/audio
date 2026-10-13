@@ -4,7 +4,7 @@ Note de travail, pas de la doc durable : décrit où en est le projet et quoi fa
 ensuite. Décisions durables → `CLAUDE.md` / `architecture.md` / `proto/user-stories.md`
 (stories 1-69, chacune avec ses **Décisions**). Points repoussés → `TODO.md`.
 
-## État au 2026-10-12 — texte, médias, présence, notifications, comptes : faits
+## État au 2026-10-13 — texte, médias, présence, notifications, comptes : faits
 
 Tout est testé contre le vrai serveur (scripts de `tests-e2e/`), **mais rien n'a été
 vu dans un navigateur** pendant la session (pas d'outil navigateur) : rendu, barre de
@@ -52,8 +52,14 @@ illimité), `AUDIO_PEPPER` (sinon `data/pepper`), et pour les tests
 
 | Fichier | Rôle |
 |---|---|
-| `main.rs` (~1600 lignes, **à découper**) | dispatch des `ClientEnvelope`, auth (lien, session, mot de passe, invitation), salons, messages (envoi, sync paginée, modification, suppression), DM, profils, statut, thème |
-| `http.rs` | HTTP/1.1 sur le même port : requêtes accumulées, keep-alive, upgrade WS, `POST /media` (en flux), `GET /media/{id}` (Bearer ou ticket, `Range` → 206) |
+| `main.rs` | démarrage, `AppState`, boucle d'acceptation |
+| `connection.rs` | vie d'une connexion WS : lecture des trames, réponse, diffusion (`notify`) |
+| `dispatch.rs` | aiguillage des `ClientEnvelope`, contrôles d'accès (connecté, admin) |
+| `auth.rs` | portes d'entrée : session, mot de passe, invitation (vérifiée à l'ouverture), lien de dépannage, tokens de dev |
+| `users.rs` | profils : pseudo, statut, thème, description, photo |
+| `channels.rs` | salons et DM |
+| `messages.rs` | envoi, modification, suppression, sync et pages d'historique |
+| `http.rs` | HTTP/1.1 sur le même port : requêtes accumulées, keep-alive, upgrade WS, `POST /media` (en flux), `GET /media/{id}` (Bearer ou ticket, `Range` → 206), front embarqué (`rust-embed` sur `front/dist`) |
 | `ws.rs` | frames WebSocket accumulées, plafond 1 Mio |
 | `registry.rs` | connexions : broadcast, envoi ciblé par utilisateur (DM), ping de toutes les connexions |
 | `presence.rs` | présence en mémoire, délais de 15 s (stories 23, 41-42) |
@@ -75,7 +81,8 @@ silence ; client : `Heartbeat` toutes les 20 s, reconnexion sans réponse sous 1
 
 | Fichier | Rôle |
 |---|---|
-| `store.ts` (~1000 lignes, à découper aussi) | `ChatStore` hors React : WS, auth, broadcasts, reconnexion, heartbeat, pages d'historique, médias, non-lus, notifications, admin |
+| `store.ts` | `ChatStore` hors React, dernière couche : WS, reconnexion, heartbeat, auth, admin, broadcasts |
+| `store-core.ts` ← `store-media.ts` ← `store-profiles.ts` ← `store-notify.ts` ← `store-conversations.ts` | couches du store (une classe abstraite par fichier, chacune n'appelle que celles du dessous) : état et requête ; médias ; profils ; non-lus et notifications ; salons, DM, messages. Le vocal = une couche de plus |
 | `ChatView.tsx` | colonne Salons / Privé (badges, 🔔 par salon, clic droit), en-tête, membres, paramètres |
 | `ChannelFeed.tsx` | fil d'une conversation : pagination au scroll, réponse, modification, suppression confirmée, mentions surlignées |
 | `Composer.tsx` | saisie riche contenteditable : texte + médias + mentions (`@` autocomplétion), envoi d'images / fichiers / dossiers (ZIP) |
@@ -99,18 +106,41 @@ silence ; client : `Heartbeat` toutes les 20 s, reconnexion sans réponse sous 1
 - Historique paginé (64 messages, `krange` inversé).
 - Persistance bincode stricte en release, tolérante en debug.
 
+## Déploiement (fait le 2026-10-13)
+
+En ligne sur **https://audio.joshua-bouchat.fr** (mini-PC Intel N150, Ubuntu 24.04,
+`joshua@mini-pc.home`). Tout est dans `deploy/` :
+
+- `deploy/deploy.sh` : construit front + back-end **sur le PC** pour le processeur du
+  serveur (`target-cpu=gracemont`, sans Key Locker ; LTO complet), copie le binaire
+  (front inclus), redémarre le service. Binaire : glibc ≥ 2.38 (serveur : 2.39) ;
+  musl impossible (monoio 0.2.4 utilise `statx`).
+- `--setup <email>` (fait) : utilisateur système `audiod` (le groupe `audio` existe
+  déjà sous Ubuntu), `/var/lib/audio`, `/etc/audio.env`, service systemd.
+- `--nginx` (fait) : **écart à « zéro nginx » propre à ce déploiement** (option A) —
+  le nginx du mini-PC garde le 443 pour d'autres sites et relaie vers audio en
+  `127.0.0.1:8443` ; certificat par certbot (webroot, renouvelé, nginx rechargé). Le
+  binaire reste autonome ; l'UDP du vocal ne passera pas par nginx. ACME dans audio
+  n'est donc plus nécessaire ici.
+- Logs : `journalctl -u audio` (liens d'invitation du bootstrap).
+
 ## Prochaines étapes (ordre recommandé, validé avec l'utilisateur)
 
-1. **Découper `main.rs`** (auth/comptes, messages, DM, profils, dispatch fin) — et
-   `store.ts` côté front — avant d'ajouter le vocal.
-2. **Déploiement** — *à discuter avant de coder* : port 443 public, ACME
-   TLS-ALPN-01 (spike dans `back-end/examples/acme_spike.rs` ; `spike-acme/` est vide), front servi par le
-   binaire (`rust-embed`, même origine, plus de proxy), port(s) UDP média pour
-   str0m (un seul démultiplexé ou une plage ?), IP publique pour l'ICE-lite.
-3. **Playwright** : vrais tests navigateur (login, message, image, DM ; plus tard
-   micro simulé) — remplacera `tests-e2e/`.
-4. **Salons vocaux** (stories 18-22, protocole `WebRtcOffer` = 22 déjà là, numéros
-   40+ réservés pour JoinVoice / LeaveVoice / IceCandidate).
+1. **Playwright** : vrais tests navigateur (login, message, image, DM ; plus tard
+   micro simulé) — remplacera `tests-e2e/`. Les scripts actuels ont vieilli :
+   `reads.mts` échoue sur les réglages (format de la story 63), et la moitié de
+   `store/*.mjs` ne simulent pas assez le navigateur (`window`, `AudioContext`)
+   pour charger le store.
+2. **Salons vocaux** (stories 18-22, protocole `WebRtcOffer` = 22 déjà là, numéros
+   40+ réservés pour JoinVoice / LeaveVoice / IceCandidate). Pistes discutées le
+   2026-10-13, à trancher dans les stories : emplacements audio pré-alloués dans
+   l'offre initiale (pas de renégociation quand quelqu'un arrive) ; ICE-lite sans
+   candidats client (le serveur apprend l'adresse du client par les requêtes STUN
+   reçues — à confirmer par un spike écho) ; un seul port UDP démultiplexé par
+   `Rtc::accepts` ; str0m avec `default-features = false, features = ["aws-lc-rs"]` ;
+   Opus 32-64 kbps. Port UDP à rediriger sur la box.
+3. **Vidéo / partage d'écran** ensuite : simulcast, relais PLI, codec commun ; P2P
+   pour les appels à deux avec repli sur le SFU.
 
 Ensuite / plus tard : mise en page mobile ; photos de profil par le chemin HTTP des
 médias (story 37) ; reprise de téléchargement par `Range` + checksum (story 53) ;
@@ -120,7 +150,7 @@ saves) ; file d'envoi bornée (`TODO.md`).
 
 ## Limites connues
 
-- Pas encore de 443 public / ACME ; cert auto-signé en dev.
+- Cert auto-signé en dev ; en prod, TLS terminé par nginx (cf. Déploiement).
 - Messages WebSocket fragmentés (FIN=0) non gérés (les navigateurs n'en envoient pas).
 - Un crash (pas un arrêt propre) perd au plus les 10 dernières secondes.
 - Un dossier envoyé est entièrement compressé en mémoire du navigateur avant l'envoi.
