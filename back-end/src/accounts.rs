@@ -292,6 +292,17 @@ pub fn invite_exists(art: &mut OxidArt, token: &str) -> bool {
     uuid::Uuid::parse_str(token).is_ok() && art.get(invite_key(token).as_bytes()).is_some()
 }
 
+/// Story 66 : échéance d'une invitation encore valable.
+pub fn invite_expiry(art: &mut OxidArt, token: &str) -> Option<u64> {
+    if uuid::Uuid::parse_str(token).is_err() {
+        return None;
+    }
+    match art.get(invite_key(token).as_bytes())? {
+        Value::String(b) => Some(codec::decode::<proto::Invite>(b.as_slice(), "invite").expires_at),
+        _ => None,
+    }
+}
+
 /// Consomme (ou révoque) une invitation ; `false` si elle n'existait plus.
 pub fn take_invite(art: &mut OxidArt, token: &str) -> bool {
     invite_exists(art, token) && art.del(invite_key(token).as_bytes())

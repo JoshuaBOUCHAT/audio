@@ -292,6 +292,13 @@ async fn handle_client_envelope(
                 Err(err) => proto::server_envelope::Payload::Error(err),
             }
         }
+        Some(Payload::CheckInvite(req)) => match accounts::invite_expiry(&mut state.art.borrow_mut(), &req.token) {
+            Some(expires_at) => proto::server_envelope::Payload::InviteChecked(proto::InviteChecked { expires_at }),
+            None => proto::server_envelope::Payload::Error(proto::Error {
+                code: 404,
+                message: "invitation invalide, expirée ou déjà utilisée".to_string(),
+            }),
+        },
         Some(Payload::RevokeInvite(req)) => {
             let revoked = (|| {
                 let mut art = state.art.borrow_mut();

@@ -203,6 +203,7 @@ message ClientEnvelope {
     ListInvites       list_invites       = 34; // story 65 (admin)
     RevokeInvite      revoke_invite      = 35; // story 65 (admin)
     CreateLoginLink   create_login_link  = 36; // story 68 (admin)
+    CheckInvite       check_invite       = 37; // story 66
 
     // --- réservé post-v1, structure indicative seulement (numéros libres à partir
     // de 40 ; 20, 21 et 23, d'abord envisagés ici, ont été pris entre-temps) ---
@@ -234,6 +235,12 @@ message AcceptInvite {
   string email = 2;
   string pseudo = 3;
   string password = 4;
+}
+
+// Story 66 (révision 2026-10-13) : le lien d'invitation est-il encore valable ?
+// Sans authentification. Réponse : InviteChecked, ou 404 comme AcceptInvite.
+message CheckInvite {
+  string token = 1;
 }
 
 // Story 67 : `current` vide si le compte n'a pas encore de mot de passe. Réponse :
@@ -419,6 +426,7 @@ message ServerEnvelope {
     Invites         invites           = 24;
     InviteRevoked   invite_revoked    = 25;
     LoginLinkCreated login_link_created = 26;
+    InviteChecked   invite_checked    = 27;
   }
 }
 
@@ -507,6 +515,10 @@ message Invites {
 
 message InviteRevoked {
   string token = 1;
+}
+
+message InviteChecked {
+  uint64 expires_at = 1; // ms epoch
 }
 
 // Story 68 : lien `{origine}/?token={token}` (lien magique, usage unique).

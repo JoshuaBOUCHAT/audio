@@ -12,6 +12,7 @@ import {
   authRequest,
   createChannel,
   acceptInvite,
+  checkInvite,
   createInvite,
   createLoginLink,
   deleteMedia,
@@ -116,6 +117,8 @@ export type ChatState = {
   error: string | null
   /** Story 65 : jeton d'invitation de l'URL, tant que le compte n'est pas créé. */
   invite: string | null
+  /** Story 66 : invitation vérifiée à l'ouverture ; `null` tant que la réponse n'est pas là. */
+  inviteValid: boolean | null
 }
 
 const INITIAL: ChatState = {
@@ -134,6 +137,7 @@ const INITIAL: ChatState = {
   history: {},
   error: null,
   invite: null,
+  inviteValid: null,
 }
 
 const RECONNECT_MAX_MS = 10_000
@@ -224,6 +228,7 @@ export class ChatStore {
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return
       this.reconnectDelay = 500
+      if (this.state.invite && this.state.inviteValid === null) void this.checkInvite(client)
       void this.authenticate()
     })
     socket.addEventListener("close", () => this.lost(socket, client))
@@ -321,14 +326,32 @@ export class ChatStore {
   }
 
   /** Story 67 : email + mot de passe. */
-  loginWithPassword = (email: string, password: string): Promise<void> =>
-    this.authenticateWith(passwordLogin(email, password))
+  loginWithPassword = async (email: string, password: string): Promise<void> => {
+    await this.authenticateWith(passwordLogin(email, password))
+  }
 
   /** Story 66 : création du compte depuis l'invitation de l'URL. */
-  acceptInvite = (email: string, pseudo: string, password: string): Promise<void> => {
+  acceptInvite = async (email: string, pseudo: string, password: string): Promise<void> => {
     const invite = this.state.invite
-    if (!invite) return Promise.resolve()
-    return this.authenticateWith(acceptInvite(invite, email, pseudo, password), () => this.set({ invite: null }))
+    if (!invite) return
+    const refused = await this.authenticateWith(acceptInvite(invite, email, pseudo, password), () =>
+      this.set({ invite: null }),
+    )
+    // Révoquée ou expirée entre l'ouverture et l'envoi.
+    if (refused === 404) this.set({ inviteValid: false })
+  }
+
+  /** Story 66 : un lien mort n'affiche pas de formulaire voué à échouer. */
+  private async checkInvite(client: ProtocolClient): Promise<void> {
+    const invite = this.state.invite
+    if (!invite) return
+    let response: ServerEnvelope
+    try {
+      response = await client.request(checkInvite(invite))
+    } catch {
+      return // WS fermé : nouvelle vérification à la reconnexion
+    }
+    if (this.state.invite === invite) this.set({ inviteValid: !!response.inviteChecked })
   }
 
   /** Story 67 : `current` vide si le compte n'a pas encore de mot de passe. */
@@ -356,23 +379,25 @@ export class ChatStore {
   /** Revenir à l'écran de connexion depuis celui d'une invitation. */
   dropInvite = (): void => this.set({ invite: null, error: null })
 
-  private async authenticateWith(payload: ClientEnvelopeShape, onSuccess?: () => void): Promise<void> {
+  /** Code d'erreur du refus éventuel (`null` si connecté ou connexion perdue). */
+  private async authenticateWith(payload: ClientEnvelopeShape, onSuccess?: () => void): Promise<number | null> {
     const client = this.client
-    if (!client) return
+    if (!client) return null
     this.set({ phase: "authenticating", error: null })
     let response: ServerEnvelope
     try {
       response = await client.request(payload)
     } catch {
       this.set({ phase: "login", error: "connexion perdue, réessaie" })
-      return
+      return null
     }
     if (!response.authResponse) {
       this.set({ phase: "login", error: response.error?.message ?? "authentification refusée" })
-      return
+      return response.error?.code ?? null
     }
     onSuccess?.()
     this.onAuthenticated(response.authResponse)
+    return null
   }
 
   /** Fin commune de toutes les portes d'entrée : session gardée, état chargé. */

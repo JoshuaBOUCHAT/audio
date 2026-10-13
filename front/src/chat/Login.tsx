@@ -110,6 +110,26 @@ export function InviteScreen({ state, store }: { state: ChatState; store: ChatSt
   const busy = state.phase === "authenticating"
   const mismatch = confirm !== "" && confirm !== password
 
+  if (state.inviteValid !== true) {
+    const dead = state.inviteValid === false
+    return (
+      <Screen
+        title={dead ? "Lien plus valable" : "Invitation"}
+        description={
+          dead
+            ? "Ce lien d'invitation a expiré, a été révoqué ou a déjà servi. Demande un nouveau lien à l'admin."
+            : "Vérification du lien…"
+        }
+      >
+        {dead && (
+          <Button variant="link" size="sm" className="self-start px-0" onClick={store.dropInvite}>
+            J'ai déjà un compte
+          </Button>
+        )}
+      </Screen>
+    )
+  }
+
   return (
     <Screen title="Bienvenue !" description="Tu as été invité : crée ton compte pour rejoindre le serveur.">
       <form

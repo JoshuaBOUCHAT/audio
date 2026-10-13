@@ -60,6 +60,11 @@ email et mot de passe.
     de passe par HMAC-SHA256 avant bcrypt — un dump seul ne permet pas de tester des
     mots de passe. Hash dans `password:{user}`, jamais dans `User` (qui part au
     client).
+    **Révision 2026-10-13** : le lien est **vérifié à l'ouverture** (`CheckInvite`,
+    avant toute connexion) — un lien expiré, révoqué ou déjà utilisé affiche
+    « lien plus valide, demande-en un autre à l'admin » au lieu d'un formulaire qui
+    n'échouerait qu'à l'envoi. Ne révèle rien : seul qui détient le jeton (UUID
+    complet) peut demander.
 67. En tant qu'utilisateur, je veux me connecter avec **email et mot de passe**, et
     définir ou changer mon mot de passe dans mon profil (un compte venu d'un lien
     magique n'en a pas encore).

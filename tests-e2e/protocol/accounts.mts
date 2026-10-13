@@ -15,6 +15,9 @@ const admin = r.authResponse!;
 ok(admin.me!.isAdmin && admin.me!.hasPassword && admin.me!.pseudo === "Léa", "invitation du bootstrap : compte admin créé, connecté, pseudo choisi");
 const inv = (await c.request(P.createInvite(3600))).inviteCreated!.invite!;
 ok(Number(inv.expiresAt) - Number(inv.createdAt) === 3_600_000, "invitation créée, 1 h");
+const checked = (await (await conn()).request(P.checkInvite(inv.token))).inviteChecked;
+ok(checked && Number(checked.expiresAt) === Number(inv.expiresAt), "invitation vérifiée à l'ouverture, sans compte : valable, échéance");
+ok((await (await conn()).request(P.checkInvite("00000000-0000-4000-8000-000000000000"))).error?.code === 404, "invitation inconnue : 404");
 ok((await c.request(P.listInvites())).invites!.invites.length === 1, "liste des invitations en cours");
 ok((await c.request(P.createInvite(10))).error?.code === 400, "durée < 1 min refusée");
 const b = await conn();
@@ -24,6 +27,7 @@ ok((await b.request(P.acceptInvite(inv.token, "bob@x.fr", "léa", "motdepasse-bo
 r = await b.request(P.acceptInvite(inv.token, "Bob@X.fr", "Bob", "motdepasse-bob"));
 const bob = r.authResponse!; ok(bob && !bob.me!.isAdmin && bob.me!.email === "bob@x.fr", "Bob crée son compte (email normalisé)");
 ok((await (await conn()).request(P.acceptInvite(inv.token, "eve@x.fr", "Eve", "motdepasse-eve"))).error?.code === 404, "invitation déjà utilisée : refusée");
+ok((await (await conn()).request(P.checkInvite(inv.token))).error?.code === 404, "invitation déjà utilisée : vérification 404");
 ok((await b.request(P.createInvite(3600))).error?.code === 403, "Bob (non admin) ne crée pas d'invitation");
 const bobId = Number(bob.me!.id);
 r = await (await conn()).request(P.passwordLogin("bob@x.fr", "motdepasse-bob"));
@@ -43,6 +47,7 @@ ok((await b.request(P.setPassword("pas-le-bon", "nouveau-mdp-bob"))).error?.code
 ok((await b.request(P.setPassword("motdepasse-bob", "nouveau-mdp-bob"))).passwordSet, "mot de passe changé");
 const inv2 = (await c.request(P.createInvite(3600))).inviteCreated!.invite!;
 ok((await c.request(P.revokeInvite(inv2.token))).inviteRevoked && (await c.request(P.listInvites())).invites!.invites.length === 0, "invitation révoquée");
+ok((await (await conn()).request(P.checkInvite(inv2.token))).error?.code === 404, "invitation révoquée : vérification 404 (pas de formulaire)");
 const d = await conn(); const dev = (await d.request(P.authRequest("00000000-0000-0000-0000-000000000002"))).authResponse!;
 ok(!dev.me!.hasPassword && (await d.request(P.setPassword("", "premier-mdp-dev"))).passwordSet, "compte sans mot de passe : en définit un sans l'actuel");
 process.exit(0);

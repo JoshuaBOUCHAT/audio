@@ -63,6 +63,11 @@ export function acceptInvite(token: string, email: string, pseudo: string, passw
   return { payload: "acceptInvite", acceptInvite: { token, email, pseudo, password } };
 }
 
+/** Story 66 : le lien d'invitation est-il encore valable ? */
+export function checkInvite(token: string): ClientEnvelopeShape {
+  return { payload: "checkInvite", checkInvite: { token } };
+}
+
 /** Story 67 : `current` vide si le compte n'a pas encore de mot de passe. */
 export function setPassword(current: string, password: string): ClientEnvelopeShape {
   return { payload: "setPassword", setPassword: { current, password } };
