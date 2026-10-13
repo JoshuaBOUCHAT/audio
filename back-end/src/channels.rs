@@ -147,8 +147,9 @@ pub fn range_bytes<'a>(val: RangeVal<'a>, what: &str) -> &'a [u8] {
     }
 }
 
-/// Story 7 : création de salon texte, admin uniquement (seule distinction de
-/// privilège du système, cf. CLAUDE.md), nom unique parmi les salons texte. Le statut admin est relu dans `user:{id}`
+/// Stories 7, 70 : création de salon texte ou vocal, admin uniquement (seule
+/// distinction de privilège du système, cf. CLAUDE.md), nom unique parmi les salons du
+/// même type. Le statut admin est relu dans `user:{id}`
 /// plutôt que mis en cache sur la connexion.
 pub fn create_channel(
     req: proto::CreateChannel,
@@ -172,11 +173,12 @@ pub fn create_channel(
     let lowered = valid.name.to_lowercase();
     if list_channels(&art)
         .iter()
-        .any(|c| c.r#type() == proto::channel::Type::Text && c.name.to_lowercase() == lowered)
+        .any(|c| c.r#type() == valid.kind && c.name.to_lowercase() == lowered)
     {
+        let kind = if valid.kind == proto::channel::Type::Voice { "vocal" } else { "texte" };
         return Err(proto::Error {
             code: 409,
-            message: "un salon texte porte déjà ce nom".to_string(),
+            message: format!("un salon {kind} porte déjà ce nom"),
         });
     }
 
@@ -186,7 +188,7 @@ pub fn create_channel(
     let channel = proto::Channel {
         id,
         name: valid.name,
-        r#type: proto::channel::Type::Text as i32,
+        r#type: valid.kind as i32,
         participant_ids: vec![],
     };
     let encoded = codec::encode(&channel);

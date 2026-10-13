@@ -16,6 +16,7 @@ mod proto;
 mod registry;
 mod users;
 mod validate;
+mod voice;
 mod ws;
 
 use std::cell::{Cell, RefCell};
@@ -61,6 +62,8 @@ struct AppState {
     presence: SharedPresence,
     media: Rc<media::MediaConfig>,
     passwords: Rc<accounts::Passwords>,
+    /// Stories 18, 21-22 : salons vocaux, en mémoire seulement.
+    voice: voice::SharedVoice,
 }
 
 #[monoio::main(timer_enabled = true)]
@@ -97,14 +100,18 @@ async fn main() {
     persist::install_shutdown(art.clone());
     let dirty = Rc::new(Cell::new(false));
     persist::install_periodic_save(art.clone(), dirty.clone());
+    let registry = SharedRegistry::default();
+    let (voice, voice_socket) = voice::Voice::bind(registry.clone());
+    monoio::spawn(voice::run(voice.clone(), voice_socket));
     let state = AppState {
         art,
         bootstrap_admin_email,
-        registry: SharedRegistry::default(),
+        registry,
         dirty,
         presence: Rc::new(RefCell::new(Presence::from_env())),
         media: Rc::new(media::MediaConfig::from_env(&persist::data_dir())),
         passwords: Rc::new(accounts::Passwords::load(&persist::data_dir())),
+        voice,
     };
 
     if cfg!(debug_assertions) {

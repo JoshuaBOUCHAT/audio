@@ -28,6 +28,7 @@ pub fn validate_auth_request(raw: proto::AuthRequest) -> Result<ValidAuthRequest
 /// L'unicité, qui dépend de l'état, est vérifiée par `create_channel`.
 pub struct ValidCreateChannel {
     pub name: String,
+    pub kind: proto::channel::Type,
 }
 
 pub fn validate_create_channel(
@@ -40,8 +41,19 @@ pub fn validate_create_channel(
             message: "nom de salon vide".to_string(),
         });
     }
+    // Story 70 : salon texte (défaut) ou vocal ; un DM ne se crée pas ici (story 28).
+    let kind = match proto::channel::Type::try_from(raw.r#type) {
+        Ok(kind @ (proto::channel::Type::Text | proto::channel::Type::Voice)) => kind,
+        _ => {
+            return Err(proto::Error {
+                code: 400,
+                message: "type de salon invalide".to_string(),
+            });
+        }
+    };
     Ok(ValidCreateChannel {
         name: name.to_string(),
+        kind,
     })
 }
 

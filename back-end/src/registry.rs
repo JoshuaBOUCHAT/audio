@@ -26,6 +26,14 @@ pub type SharedRegistry = Rc<RefCell<Registry>>;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnId(Key);
 
+#[cfg(test)]
+impl ConnId {
+    /// Tests : identifiant sans connexion derrière (ce qui lui est envoyé est ignoré).
+    pub fn test(idx: u32) -> Self {
+        ConnId(Key { idx, generation: u32::MAX })
+    }
+}
+
 struct Conn {
     /// `None` pendant qu'une `write_task` la possède.
     write: Option<OwnedWriteHalf<TlsStream>>,

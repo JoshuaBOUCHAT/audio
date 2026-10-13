@@ -27,7 +27,15 @@ pub fn load_conversation(
     if !keys::is_sortable(channel_id) {
         return Err(unknown());
     }
-    if art.get(keys::channel_key(channel_id).as_bytes()).is_some() {
+    if let Some(val) = art.get(keys::channel_key(channel_id).as_bytes()) {
+        let channel: proto::Channel = codec::decode(
+            val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
+            "channel:{id}",
+        );
+        // Story 70 : un salon vocal n'a pas de fil de messages.
+        if channel.r#type() == proto::channel::Type::Voice {
+            return Err(unknown());
+        }
         return Ok(Audience::Everyone);
     }
     let Some(val) = art.get(keys::dm_key(channel_id).as_bytes()) else {

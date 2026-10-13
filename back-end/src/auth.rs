@@ -159,6 +159,7 @@ pub fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uu
         dms,
         unread,
         settings,
+        voice: Vec::new(), // rempli par `authenticated`, comme la présence
     }
 }
 

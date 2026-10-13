@@ -9,8 +9,10 @@ use crate::connection::{event, notify, server_frame};
 use crate::media::get_media_info;
 use crate::messages::{delete_message, edit_message, load_conversation, send_message, sync_messages};
 use crate::registry::{self, ConnId};
-use crate::users::{get_avatar, load_user, set_avatar, set_bio, set_pseudo, set_status, set_theme, user_updated};
-use crate::{AppState, accounts, keys, media, presence, proto, reads, validate};
+use crate::users::{
+    get_avatar, load_user, require_pseudo, set_avatar, set_bio, set_pseudo, set_status, set_theme, user_updated,
+};
+use crate::{AppState, accounts, codec, keys, media, presence, proto, reads, validate};
 
 pub async fn handle_client_envelope(
     envelope: proto::ClientEnvelope,
@@ -302,6 +304,24 @@ pub async fn handle_client_envelope(
             Ok(avatar) => proto::server_envelope::Payload::Avatar(avatar),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::JoinVoice(req)) => match join_voice(req, state, conn, *user_id) {
+            Ok(joined) => proto::server_envelope::Payload::VoiceJoined(joined),
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::LeaveVoice(_)) => match require_auth(*user_id) {
+            Ok(_) => {
+                state.voice.borrow_mut().leave(conn);
+                proto::server_envelope::Payload::VoiceLeft(proto::VoiceLeft {})
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
+        Some(Payload::VoiceAnswer(req)) => {
+            let answered = require_auth(*user_id).and_then(|_| state.voice.borrow_mut().answer(conn, req.offer_id, &req.sdp));
+            match answered {
+                Ok(()) => proto::server_envelope::Payload::VoiceAnswered(proto::VoiceAnswered {}),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
         _ => {
             eprintln!("[ws] type de ClientEnvelope non géré");
             return None;
@@ -333,10 +353,44 @@ pub fn authenticated(
                 me.status() == proto::Status::Invisible,
             );
             response.online_user_ids = state.presence.borrow().online_ids();
+            response.voice = state.voice.borrow().snapshot();
             proto::server_envelope::Payload::AuthResponse(response)
         }
         Err(err) => proto::server_envelope::Payload::Error(err),
     }
+}
+
+/// Story 18 : entrée dans le vocal d'un salon VOICE (pseudo requis, comme pour écrire).
+fn join_voice(
+    req: proto::JoinVoice,
+    state: &AppState,
+    conn: ConnId,
+    user_id: Option<u64>,
+) -> Result<proto::VoiceJoined, proto::Error> {
+    let user_id = require_auth(user_id)?;
+    {
+        let mut art = state.art.borrow_mut();
+        require_pseudo(&mut art, user_id)?;
+        let is_voice = keys::is_sortable(req.channel_id)
+            && art.get(keys::channel_key(req.channel_id).as_bytes()).is_some_and(|val| {
+                let channel: proto::Channel = codec::decode(
+                    val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
+                    "channel:{id}",
+                );
+                channel.r#type() == proto::channel::Type::Voice
+            });
+        if !is_voice {
+            return Err(proto::Error {
+                code: 404,
+                message: "salon vocal inconnu".to_string(),
+            });
+        }
+    }
+    let sdp = state.voice.borrow_mut().join(conn, user_id, req.channel_id, &req.sdp)?;
+    Ok(proto::VoiceJoined {
+        channel_id: req.channel_id,
+        sdp,
+    })
 }
 
 /// Stories 65, 68 : actions réservées à l'admin.

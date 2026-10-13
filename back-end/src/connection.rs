@@ -25,6 +25,8 @@ pub async fn handle_ws_connection(tls: TlsStream, state: AppState, pending: Vec<
     let (read, write) = tls.into_split();
     let conn = state.registry.borrow_mut().insert(write);
     read_loop(read, conn, &state, pending).await;
+    // Story 21 : une coupure WebSocket vaut LeaveVoice.
+    state.voice.borrow_mut().leave(conn);
     state.registry.borrow_mut().remove(conn);
     presence::disconnected(&state.presence, &state.registry, conn);
     println!("[ws] connexion terminée");
