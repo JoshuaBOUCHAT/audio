@@ -13,7 +13,7 @@ install -d -o audiod -g audiod -m 700 /var/lib/audio /var/lib/audio/certs
 if [[ ! -f /etc/audio.env ]]; then
     install -m 600 /dev/null /etc/audio.env
     cat > /etc/audio.env <<CONF
-AUDIO_LISTEN=0.0.0.0:443
+AUDIO_LISTEN=127.0.0.1:8443
 ADMIN_EMAIL=$admin_email
 CONF
 fi
