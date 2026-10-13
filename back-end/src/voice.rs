@@ -54,6 +54,9 @@ struct Participant {
     conn: ConnId,
     user_id: u64,
     channel_id: u64,
+    /// Story 73 : vus des autres ; en sourdine, plus rien ne lui est envoyé.
+    muted: bool,
+    deafened: bool,
     rtc: Rtc,
     /// Pistes d'envoi vers ce navigateur : une par autre participant du salon, plus
     /// les pistes libres en attente d'un arrivant.
@@ -110,22 +113,25 @@ impl Voice {
     pub fn snapshot(&self) -> Vec<proto::VoiceChanged> {
         let mut channels: Vec<proto::VoiceChanged> = Vec::new();
         for p in &self.participants {
-            match channels.iter_mut().find(|c| c.channel_id == p.channel_id) {
-                Some(c) => c.user_ids.push(p.user_id),
-                None => channels.push(proto::VoiceChanged {
+            if !channels.iter().any(|c| c.channel_id == p.channel_id) {
+                channels.push(proto::VoiceChanged {
                     channel_id: p.channel_id,
-                    user_ids: vec![p.user_id],
-                }),
+                    members: self.members(p.channel_id),
+                });
             }
         }
         channels
     }
 
-    fn members(&self, channel_id: u64) -> Vec<u64> {
+    fn members(&self, channel_id: u64) -> Vec<proto::VoiceMember> {
         self.participants
             .iter()
             .filter(|p| p.channel_id == channel_id)
-            .map(|p| p.user_id)
+            .map(|p| proto::VoiceMember {
+                user_id: p.user_id,
+                muted: p.muted,
+                deafened: p.deafened,
+            })
             .collect()
     }
 
@@ -133,7 +139,7 @@ impl Voice {
     fn announce(&self, channel_id: u64) {
         let payload = proto::server_envelope::Payload::VoiceChanged(proto::VoiceChanged {
             channel_id,
-            user_ids: self.members(channel_id),
+            members: self.members(channel_id),
         });
         registry::broadcast_all(&self.registry, &event(payload));
     }
@@ -148,12 +154,13 @@ impl Voice {
     /// Story 18 : entrée dans le vocal avec l'offre du navigateur. Un utilisateur n'est
     /// que dans un vocal à la fois : son ancienne place (autre salon, autre appareil)
     /// est libérée d'abord. Les pistes vers les autres partiront dans un `VoiceOffer`.
-    pub fn join(&mut self, conn: ConnId, user_id: u64, channel_id: u64, sdp: &str) -> Result<String, proto::Error> {
+    pub fn join(&mut self, conn: ConnId, user_id: u64, req: &proto::JoinVoice) -> Result<String, proto::Error> {
+        let channel_id = req.channel_id;
         let bad_offer = |e: String| proto::Error {
             code: 400,
             message: format!("offre SDP refusée : {e}"),
         };
-        let offer = SdpOffer::from_sdp_string(sdp).map_err(|e| bad_offer(format!("{e:?}")))?;
+        let offer = SdpOffer::from_sdp_string(&req.sdp).map_err(|e| bad_offer(format!("{e:?}")))?;
         let mut rtc = self.new_rtc();
         let answer = rtc
             .sdp_api()
@@ -172,6 +179,8 @@ impl Voice {
             conn,
             user_id,
             channel_id,
+            muted: req.muted || req.deafened,
+            deafened: req.deafened,
             rtc,
             tracks: Vec::new(),
             pending: None,
@@ -200,6 +209,23 @@ impl Voice {
         println!("[voice] {} quitte le salon {}", p.user_id, p.channel_id);
         self.renegotiate_channel(p.channel_id);
         self.announce(p.channel_id);
+    }
+
+    /// Story 73 : micro coupé / sourdine (qui coupe aussi le micro), vus de tous.
+    pub fn set_state(&mut self, conn: ConnId, muted: bool, deafened: bool) -> Result<(), proto::Error> {
+        let p = self
+            .participants
+            .iter_mut()
+            .find(|p| p.conn == conn)
+            .ok_or_else(|| proto::Error {
+                code: 409,
+                message: "pas dans un vocal".to_string(),
+            })?;
+        p.muted = muted || deafened;
+        p.deafened = deafened;
+        let channel_id = p.channel_id;
+        self.announce(channel_id);
+        Ok(())
     }
 
     /// Story 18 : réponse du navigateur à une offre du serveur.
@@ -388,7 +414,12 @@ impl Voice {
     /// Le paquet Opus de `source`, tel quel, sur la piste de `source` chez chaque autre
     /// participant du salon.
     fn forward(&mut self, channel_id: u64, source: u64, data: &MediaData) {
-        for p in self.participants.iter_mut().filter(|p| p.channel_id == channel_id && p.user_id != source) {
+        // Story 73 : rien vers qui est en sourdine.
+        for p in self
+            .participants
+            .iter_mut()
+            .filter(|p| p.channel_id == channel_id && p.user_id != source && !p.deafened)
+        {
             let Some(track) = p.tracks.iter().find(|t| t.live && t.source == Some(source)) else {
                 continue;
             };
@@ -511,7 +542,12 @@ mod tests {
             let mut api = self.rtc.sdp_api();
             let mic = api.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
             let (offer, pending) = api.apply().unwrap();
-            let answer = voice.join(self.conn, self.user, CHANNEL, &offer.to_sdp_string()).unwrap();
+            let req = proto::JoinVoice {
+                channel_id: CHANNEL,
+                sdp: offer.to_sdp_string(),
+                ..Default::default()
+            };
+            let answer = voice.join(self.conn, self.user, &req).unwrap();
             self.rtc
                 .sdp_api()
                 .accept_answer(pending, SdpAnswer::from_sdp_string(&answer).unwrap())
@@ -608,7 +644,7 @@ mod tests {
         for b in &mut browsers {
             b.join(&mut voice);
         }
-        assert_eq!(voice.snapshot()[0].user_ids.len(), 3);
+        assert_eq!(voice.snapshot()[0].members.len(), 3);
         run_for(&mut voice, &mut browsers, &mut now, 3000);
         for b in &browsers {
             let others: Vec<u64> = (1..=3).filter(|&u| u != b.user).collect();
@@ -636,6 +672,17 @@ mod tests {
         assert!(browsers[2].heard(1) > 50 && browsers[2].heard(3) > 50, "le 4 entend 1 et 3");
         assert!(heard_before[0] > 50 && heard_before[1] > 50, "1 et 3 entendent le 4");
         assert_eq!(browsers[0].m_lines, lines_before, "ligne SDP du 2 recyclée pour le 4");
+
+        // Story 73 : le 1 en sourdine ne reçoit plus rien, les autres si.
+        voice.set_state(browsers[0].conn, false, true).unwrap();
+        assert!(voice.snapshot()[0].members.iter().any(|m| m.user_id == 1 && m.muted && m.deafened));
+        run_for(&mut voice, &mut browsers, &mut now, 200);
+        let deaf_before = browsers[0].heard(4);
+        let other_before = browsers[1].heard(4);
+        run_for(&mut voice, &mut browsers, &mut now, 1000);
+        assert_eq!(browsers[0].heard(4), deaf_before, "en sourdine : rien reçu");
+        assert!(browsers[1].heard(4) > other_before + 30, "les autres reçoivent toujours");
+        voice.set_state(browsers[0].conn, false, false).unwrap();
 
         // Story 71 : le 4 se tait, plus rien n'arrive de lui.
         browsers[2].speaking = false;

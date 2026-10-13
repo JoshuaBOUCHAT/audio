@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::channels::{list_channels, list_dms};
 use crate::dispatch::require_auth;
 use crate::email::Email;
-use crate::users::{list_profiles, load_user, pseudo_index_key, save_user};
+use crate::users::{list_profiles, load_user, pseudo_index_key, save_user, voice_volumes};
 use crate::{AppState, accounts, proto, reads, validate};
 
 /// Nombre de tokens de connexion de dev (`dev_login_email`).
@@ -150,6 +150,7 @@ pub fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uu
         .map(|id| reads::unread(art, user.id, id))
         .collect();
     let settings = Some(reads::settings(art, user.id));
+    let voice_volumes = voice_volumes(art, user.id);
     proto::AuthResponse {
         me: Some(user),
         channels,
@@ -160,6 +161,7 @@ pub fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uu
         unread,
         settings,
         voice: Vec::new(), // rempli par `authenticated`, comme la présence
+        voice_volumes,
     }
 }
 

@@ -523,8 +523,10 @@ suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1
     raccourcis clavier (onglet actif ; raccourcis globaux avec l'app Tauri). La
     sourdine coupe aussi le micro ; l'enlever rend au micro l'état d'avant (coupé
     avant la sourdine = reste coupé). Micro coupé = plus rien n'est envoyé (comme le
-    silence, story 71) ; sourdine = lecture coupée localement. Que les autres le
-    voient : à trancher (message de protocole).
+    silence, story 71) ; sourdine = lecture coupée localement.
+    **Révision 2026-10-13** : les autres **voient** micro coupé et sourdine
+    (`SetVoiceState`, diffusé dans `VoiceChanged` ; état initial dans `JoinVoice`).
+    En sourdine, le serveur **n'envoie plus rien** à la personne (bande passante).
 74. En tant qu'utilisateur, je veux régler le **volume général** des vocaux.
     **Décisions** : appliqué dans le navigateur (0-100 %), mémorisé sur l'appareil.
 75. En tant qu'utilisateur, je veux régler le **gain de mon micro**, au-delà de 100 %
@@ -536,7 +538,11 @@ suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1
     dans les vocaux comme plus tard dans les appels privés.
     **Décisions** : appliqué par le navigateur de celui qui écoute, à la piste de
     cette personne. Rangé dans le compte (synchronisé entre appareils, comme les
-    règles par personne de la story 63) — à confirmer.
+    règles par personne de la story 63), confirmé le 2026-10-13 — mais **hors de
+    `Settings`** : ce type est stocké tel quel en bincode strict, un champ de plus
+    ferait planter la relecture des réglages existants en release. Clé dédiée
+    `voice_volume:{moi}:{autre}` (un entier, 100 % = clé absente), `SetVoiceVolume`,
+    état initial dans `AuthResponse`.
 
 ---
 

@@ -1,5 +1,7 @@
-//! Profils (stories 34-37, 41, 43, 55) : pseudo, statut, thème, description, photo.
+//! Profils (stories 34-37, 41, 43, 55) : pseudo, statut, thème, description, photo ;
+//! volume de chaque personne pour moi (story 76).
 
+use oxidart::krange::RangeVal;
 use oxidart::{OxidArt, Value};
 use radixox_lib::shared_byte::SharedByte;
 
@@ -7,7 +9,7 @@ use crate::channels::range_bytes;
 use crate::connection::server_frame;
 use crate::dispatch::require_auth;
 use crate::registry::{self, ConnId};
-use crate::{AppState, codec, proto, validate};
+use crate::{AppState, codec, keys, proto, validate};
 
 /// Stories 35-37 : le changement de profil est diffusé aux autres clients
 /// authentifiés ; l'auteur le reçoit en réponse.
@@ -243,6 +245,57 @@ pub fn load_user(art: &mut OxidArt, id: u64) -> proto::User {
     codec::decode(user_bytes.as_bytes().expect("user:{id} toujours Value::String").as_slice(), "user:{id}")
 }
 
+
+
+/// Story 76 : au-delà, refusé (la page propose 0-200 %).
+const MAX_VOICE_VOLUME: u32 = 200;
+
+/// Story 76 : `voice_volume:{moi}:{autre}` → volume en %, clé absente = 100 %. Une clé
+/// par personne réglée, hors de `Settings` (bincode strict, cf. user-stories.md).
+fn voice_volume_prefix(user_id: u64) -> String {
+    format!("voice_volume:{}:", keys::sortable_id(user_id))
+}
+
+pub fn voice_volumes(art: &OxidArt, user_id: u64) -> Vec<proto::VoiceVolumeSet> {
+    let prefix = voice_volume_prefix(user_id);
+    art.krange(prefix.as_bytes(), b"", usize::MAX, false)
+        .iter()
+        .filter_map(|(key, val)| {
+            let other = keys::parse_sortable_id(&key[prefix.len()..])?;
+            let RangeVal::Int(volume) = val else { return None };
+            Some(proto::VoiceVolumeSet {
+                user_id: other,
+                volume: volume as u32,
+            })
+        })
+        .collect()
+}
+
+pub fn set_voice_volume(
+    req: proto::SetVoiceVolume,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::VoiceVolumeSet, proto::Error> {
+    let me = require_auth(user_id)?;
+    if req.volume > MAX_VOICE_VOLUME || !keys::is_sortable(req.user_id) || req.user_id == me {
+        return Err(proto::Error {
+            code: 400,
+            message: format!("volume entre 0 et {MAX_VOICE_VOLUME} %, pour une autre personne"),
+        });
+    }
+    let key = format!("{}{}", voice_volume_prefix(me), keys::sortable_id(req.user_id));
+    let mut art = state.art.borrow_mut();
+    if req.volume == 100 {
+        art.del(key.as_bytes());
+    } else {
+        art.set(SharedByte::from_str(&key), Value::Int(req.volume as i64));
+    }
+    state.dirty.set(true);
+    Ok(proto::VoiceVolumeSet {
+        user_id: req.user_id,
+        volume: req.volume,
+    })
+}
 
 #[cfg(test)]
 mod tests {

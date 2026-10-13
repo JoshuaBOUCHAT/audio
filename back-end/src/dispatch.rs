@@ -10,7 +10,8 @@ use crate::media::get_media_info;
 use crate::messages::{delete_message, edit_message, load_conversation, send_message, sync_messages};
 use crate::registry::{self, ConnId};
 use crate::users::{
-    get_avatar, load_user, require_pseudo, set_avatar, set_bio, set_pseudo, set_status, set_theme, user_updated,
+    get_avatar, load_user, require_pseudo, set_avatar, set_bio, set_pseudo, set_status, set_theme, set_voice_volume,
+    user_updated,
 };
 use crate::{AppState, accounts, codec, keys, media, presence, proto, reads, validate};
 
@@ -315,6 +316,23 @@ pub async fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SetVoiceState(req)) => {
+            let set = require_auth(*user_id).and_then(|_| state.voice.borrow_mut().set_state(conn, req.muted, req.deafened));
+            match set {
+                Ok(()) => proto::server_envelope::Payload::VoiceStateSet(proto::VoiceStateSet {}),
+                Err(err) => proto::server_envelope::Payload::Error(err),
+            }
+        }
+        Some(Payload::SetVoiceVolume(req)) => match set_voice_volume(req, state, *user_id) {
+            Ok(set) => {
+                let set = proto::server_envelope::Payload::VoiceVolumeSet(set);
+                // Story 76 : mes autres appareils suivent, personne d'autre.
+                let me = user_id.expect("set_voice_volume exige l'auth");
+                registry::send_to_users(&state.registry, &[me], Some(conn), &event(set.clone()));
+                set
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         Some(Payload::VoiceAnswer(req)) => {
             let answered = require_auth(*user_id).and_then(|_| state.voice.borrow_mut().answer(conn, req.offer_id, &req.sdp));
             match answered {
@@ -386,7 +404,7 @@ fn join_voice(
             });
         }
     }
-    let sdp = state.voice.borrow_mut().join(conn, user_id, req.channel_id, &req.sdp)?;
+    let sdp = state.voice.borrow_mut().join(conn, user_id, &req)?;
     Ok(proto::VoiceJoined {
         channel_id: req.channel_id,
         sdp,

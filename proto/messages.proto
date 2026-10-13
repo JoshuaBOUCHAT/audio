@@ -208,6 +208,8 @@ message ClientEnvelope {
     JoinVoice         join_voice         = 40; // story 18
     LeaveVoice        leave_voice        = 41; // story 21
     VoiceAnswer       voice_answer       = 42; // story 18
+    SetVoiceState     set_voice_state    = 43; // story 73
+    SetVoiceVolume    set_voice_volume   = 44; // story 76
   }
   reserved 22;
 }
@@ -393,6 +395,8 @@ message GetAvatar {
 message JoinVoice {
   uint64 channel_id = 1;
   string sdp = 2;
+  bool muted = 3;    // story 73 : état d'entrée, vu des autres
+  bool deafened = 4;
 }
 
 // Story 21. Réponse : VoiceLeft. Une coupure WebSocket vaut LeaveVoice.
@@ -403,6 +407,21 @@ message LeaveVoice {}
 message VoiceAnswer {
   uint64 offer_id = 1;
   string sdp = 2;
+}
+
+// Story 73 : micro coupé / sourdine (la sourdine implique le micro coupé). Diffusé à
+// tous dans VoiceChanged ; en sourdine, le serveur n'envoie plus d'audio. Réponse :
+// VoiceStateSet.
+message SetVoiceState {
+  bool muted = 1;
+  bool deafened = 2;
+}
+
+// Story 76 : volume d'une personne pour moi, en % (0-200, 100 = par défaut). Réponse :
+// VoiceVolumeSet, aussi poussé à mes autres connexions.
+message SetVoiceVolume {
+  uint64 user_id = 1;
+  uint32 volume = 2;
 }
 
 // ═══════════════════════════════════
@@ -443,6 +462,8 @@ message ServerEnvelope {
     VoiceAnswered   voice_answered    = 30; // story 18
     VoiceLeft       voice_left        = 31; // story 21
     VoiceChanged    voice_changed     = 32; // story 22, broadcast
+    VoiceStateSet   voice_state_set   = 33; // story 73
+    VoiceVolumeSet  voice_volume_set  = 34; // story 76
   }
 }
 
@@ -470,6 +491,8 @@ message AuthResponse {
   Settings settings = 8; // stories 57-60
   // Story 22 : qui est dans chaque salon vocal (salons vides absents).
   repeated VoiceChanged voice = 9;
+  // Story 76 : mes volumes par personne (absents = 100 %).
+  repeated VoiceVolumeSet voice_volumes = 10;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -564,10 +587,24 @@ message VoiceAnswered {}
 
 message VoiceLeft {}
 
-// Story 22 : diffusé à tous à chaque arrivée ou départ ; `user_ids` vide = salon vide.
+// Story 22 : diffusé à tous à chaque arrivée, départ ou changement d'état (story 73) ;
+// `members` vide = salon vide.
 message VoiceChanged {
   uint64 channel_id = 1;
-  repeated uint64 user_ids = 2;
+  repeated VoiceMember members = 2;
+}
+
+message VoiceMember {
+  uint64 user_id = 1;
+  bool muted = 2;
+  bool deafened = 3;
+}
+
+message VoiceStateSet {}
+
+message VoiceVolumeSet {
+  uint64 user_id = 1;
+  uint32 volume = 2; // %
 }
 
 // Story 68 : lien `{origine}/?token={token}` (lien magique, usage unique).
