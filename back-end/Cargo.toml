@@ -29,5 +29,11 @@ uuid = { version = "1.23.4", features = ["v4"] }
 [profile.dev.package.blowfish]
 opt-level = 3
 
+# Le serveur est une petite machine : LTO complet. Le processeur cible
+# (`-C target-cpu=…`, celui du serveur) est passé par le script de déploiement.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [build-dependencies]
 prost-build = "0.14.4"
