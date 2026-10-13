@@ -33,6 +33,8 @@ struct Head {
     content_length: Option<u64>,
     authorization: Option<String>,
     ws_key: Option<String>,
+    /// Story 18 : domaine par lequel le navigateur nous joint (IP publique du vocal).
+    host: Option<String>,
     /// Stories 51-52 : nom (encodé en pourcentage) et description d'un dossier.
     media_name: Option<String>,
     folder_files: u32,
@@ -52,6 +54,9 @@ pub async fn serve(mut tls: TlsStream, state: AppState) {
             return;
         };
         if let Some(key) = &head.ws_key {
+            if let Some(host) = &head.host {
+                state.voice.borrow_mut().learn_host(host);
+            }
             let accept = crate::connection::compute_accept(key);
             let response = format!(
                 "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
@@ -94,6 +99,7 @@ async fn read_head(tls: &mut TlsStream, buf: &mut Vec<u8>) -> Option<Head> {
                         content_length: header("content-length").and_then(|v| v.trim().parse().ok()),
                         authorization: header("authorization"),
                         ws_key: header("sec-websocket-key"),
+                        host: header("host"),
                         media_name: header("x-media-name"),
                         folder_files: header("x-folder-files").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                         folder_size: header("x-folder-size").and_then(|v| v.trim().parse().ok()).unwrap_or(0),

@@ -13,7 +13,7 @@ use crate::users::{
     get_avatar, load_user, require_pseudo, set_avatar, set_bio, set_pseudo, set_status, set_theme, set_voice_volume,
     user_updated,
 };
-use crate::{AppState, accounts, codec, keys, media, presence, proto, reads, validate};
+use crate::{AppState, accounts, codec, keys, media, presence, proto, reads, validate, voice};
 
 pub async fn handle_client_envelope(
     envelope: proto::ClientEnvelope,
@@ -305,7 +305,7 @@ pub async fn handle_client_envelope(
             Ok(avatar) => proto::server_envelope::Payload::Avatar(avatar),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
-        Some(Payload::JoinVoice(req)) => match join_voice(req, state, conn, *user_id) {
+        Some(Payload::JoinVoice(req)) => match join_voice(req, state, conn, *user_id).await {
             Ok(joined) => proto::server_envelope::Payload::VoiceJoined(joined),
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
@@ -379,7 +379,7 @@ pub fn authenticated(
 }
 
 /// Story 18 : entrée dans le vocal d'un salon VOICE (pseudo requis, comme pour écrire).
-fn join_voice(
+async fn join_voice(
     req: proto::JoinVoice,
     state: &AppState,
     conn: ConnId,
@@ -404,7 +404,8 @@ fn join_voice(
             });
         }
     }
-    let sdp = state.voice.borrow_mut().join(conn, user_id, &req)?;
+    let public_ip = voice::public_ip(&state.voice).await;
+    let sdp = state.voice.borrow_mut().join(conn, user_id, &req, public_ip)?;
     Ok(proto::VoiceJoined {
         channel_id: req.channel_id,
         sdp,

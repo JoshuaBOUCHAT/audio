@@ -13,7 +13,10 @@
 //! toujours le premier `VoiceOffer`.
 //!
 //! Pas de trickle ICE : le serveur est en ICE-lite et apprend l'adresse du navigateur
-//! par ses requêtes STUN (validé par `examples/voice_echo.rs`). État en mémoire
+//! par ses requêtes STUN (validé par `examples/voice_echo.rs`). Candidats annoncés :
+//! l'IP locale (route par défaut) et l'IP publique, celle du domaine par lequel les
+//! navigateurs nous joignent (en-tête `Host`, résolu par DNS à l'entrée dans un vocal,
+//! gardé une minute) — rien à configurer, et une IP publique qui change est suivie. État en mémoire
 //! seulement : un redémarrage vide les vocaux, les clients rejoignent d'eux-mêmes.
 
 use std::cell::RefCell;
@@ -39,13 +42,20 @@ pub type SharedVoice = Rc<RefCell<Voice>>;
 const IDLE_TICK: Duration = Duration::from_millis(20);
 /// Plus grand datagramme lu (MTU WebRTC ~1200 octets).
 const DATAGRAM_MAX: usize = 2048;
+/// Durée pendant laquelle l'IP publique résolue est réutilisée.
+const PUBLIC_IP_TTL: Duration = Duration::from_secs(60);
 
 pub struct Voice {
     registry: SharedRegistry,
     /// Adresse locale des datagrammes reçus (`Receive::destination`), et premier
     /// candidat annoncé.
     local: SocketAddr,
-    candidates: Vec<SocketAddr>,
+    /// `AUDIO_PUBLIC_IP` : IP publique imposée, sinon celle du domaine.
+    fixed_public_ip: Option<IpAddr>,
+    /// Domaine par lequel les navigateurs nous joignent (en-tête `Host`).
+    public_host: Option<String>,
+    /// Dernière résolution de `public_host`.
+    resolved: Option<(Instant, IpAddr)>,
     participants: Vec<Participant>,
     next_offer_id: u64,
 }
@@ -77,35 +87,57 @@ struct TrackOut {
 }
 
 impl Voice {
-    /// `AUDIO_VOICE_LISTEN` : adresse UDP (défaut `0.0.0.0:8443`, en prod
-    /// `0.0.0.0:443`). `AUDIO_PUBLIC_IP` : IP publique annoncée en plus de l'IP locale
-    /// (serveur derrière une box : le port UDP doit y être redirigé).
+    /// Socket UDP : `AUDIO_VOICE_LISTEN`, sinon `0.0.0.0:443` en release (même port que
+    /// HTTPS, en UDP ; serveur derrière une box : à y rediriger) et `0.0.0.0:8443` en
+    /// debug (pas de port privilégié). `AUDIO_PUBLIC_IP` : IP publique imposée, au
+    /// lieu de celle du domaine.
     pub fn bind(registry: SharedRegistry) -> (SharedVoice, Rc<UdpSocket>) {
+        let default_listen = if cfg!(debug_assertions) { "0.0.0.0:8443" } else { "0.0.0.0:443" };
         let listen: SocketAddr = std::env::var("AUDIO_VOICE_LISTEN")
             .ok()
+            .filter(|v| !v.is_empty())
             .map(|v| v.parse().expect("AUDIO_VOICE_LISTEN : adresse ip:port"))
-            .unwrap_or_else(|| "0.0.0.0:8443".parse().unwrap());
+            .unwrap_or_else(|| default_listen.parse().unwrap());
         let socket = UdpSocket::bind(listen).unwrap_or_else(|e| panic!("bind UDP {listen}: {e}"));
         let port = socket.local_addr().expect("adresse du socket UDP").port();
         // Jamais 127.0.0.1 : les navigateurs refusent les candidats loopback.
         let ip = if listen.ip().is_unspecified() { local_ip() } else { listen.ip() };
         let local = SocketAddr::new(ip, port);
-        let mut candidates = vec![local];
-        if let Some(public) = std::env::var("AUDIO_PUBLIC_IP").ok().filter(|v| !v.is_empty()) {
-            let public: IpAddr = public.parse().expect("AUDIO_PUBLIC_IP : adresse IP");
-            candidates.push(SocketAddr::new(public, port));
-        }
-        println!("[voice] UDP {listen}, candidats annoncés : {candidates:?}");
-        (Rc::new(RefCell::new(Voice::new(registry, local, candidates))), Rc::new(socket))
+        let mut voice = Voice::new(registry, local);
+        voice.fixed_public_ip = std::env::var("AUDIO_PUBLIC_IP")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.parse().expect("AUDIO_PUBLIC_IP : adresse IP"));
+        println!("[voice] UDP {listen}, IP locale annoncée {local}, IP publique : {:?}", voice.fixed_public_ip);
+        (Rc::new(RefCell::new(voice)), Rc::new(socket))
     }
 
-    fn new(registry: SharedRegistry, local: SocketAddr, candidates: Vec<SocketAddr>) -> Self {
+    fn new(registry: SharedRegistry, local: SocketAddr) -> Self {
         Voice {
             registry,
             local,
-            candidates,
+            fixed_public_ip: None,
+            public_host: None,
+            resolved: None,
             participants: Vec::new(),
             next_offer_id: 1,
+        }
+    }
+
+    /// Domaine vu dans l'en-tête `Host` d'une connexion (port retiré). Une IP ou
+    /// `localhost` (dev) ne dit rien de l'IP publique : ignorés.
+    pub fn learn_host(&mut self, host: &str) {
+        let name = host.rsplit_once(':').map_or(host, |(name, port)| {
+            if port.bytes().all(|b| b.is_ascii_digit()) { name } else { host }
+        });
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        if name.is_empty() || name == "localhost" || name.parse::<IpAddr>().is_ok() || name.starts_with('[') {
+            return;
+        }
+        if self.public_host.as_deref() != Some(name.as_str()) {
+            println!("[voice] domaine public : {name}");
+            self.public_host = Some(name);
+            self.resolved = None;
         }
     }
 
@@ -154,14 +186,20 @@ impl Voice {
     /// Story 18 : entrée dans le vocal avec l'offre du navigateur. Un utilisateur n'est
     /// que dans un vocal à la fois : son ancienne place (autre salon, autre appareil)
     /// est libérée d'abord. Les pistes vers les autres partiront dans un `VoiceOffer`.
-    pub fn join(&mut self, conn: ConnId, user_id: u64, req: &proto::JoinVoice) -> Result<String, proto::Error> {
+    pub fn join(
+        &mut self,
+        conn: ConnId,
+        user_id: u64,
+        req: &proto::JoinVoice,
+        public_ip: Option<IpAddr>,
+    ) -> Result<String, proto::Error> {
         let channel_id = req.channel_id;
         let bad_offer = |e: String| proto::Error {
             code: 400,
             message: format!("offre SDP refusée : {e}"),
         };
         let offer = SdpOffer::from_sdp_string(&req.sdp).map_err(|e| bad_offer(format!("{e:?}")))?;
-        let mut rtc = self.new_rtc();
+        let mut rtc = self.new_rtc(public_ip);
         let answer = rtc
             .sdp_api()
             .accept_offer(offer)
@@ -262,7 +300,7 @@ impl Voice {
     /// (str0m retient sinon jusqu'à 15 paquets, 300 ms, après une perte) : chaque
     /// paquet repart aussitôt, le navigateur qui écoute comble les trous — la mémoire
     /// tampon d'un SFU, c'est de la latence pour tout le monde.
-    fn new_rtc(&self) -> Rtc {
+    fn new_rtc(&self, public_ip: Option<IpAddr>) -> Rtc {
         let mut config = Rtc::builder()
             .set_ice_lite(true)
             .set_reordering_size_audio(0)
@@ -281,7 +319,8 @@ impl Voice {
             },
         );
         let mut rtc = config.build(Instant::now());
-        for &addr in &self.candidates {
+        let public = public_ip.map(|ip| SocketAddr::new(ip, self.local.port()));
+        for addr in [Some(self.local), public.filter(|&p| p != self.local)].into_iter().flatten() {
             let candidate = Candidate::host(addr, "udp").expect("candidat UDP valide");
             rtc.add_local_candidate(candidate);
         }
@@ -460,6 +499,39 @@ impl Voice {
     }
 }
 
+/// IP publique à annoncer : `AUDIO_PUBLIC_IP`, sinon le domaine résolu (une minute de
+/// cache ; en cas d'échec, la dernière connue). Hors de tout emprunt de `voice` pendant
+/// la requête DNS.
+pub async fn public_ip(voice: &SharedVoice) -> Option<IpAddr> {
+    let host = {
+        let voice = voice.borrow();
+        if voice.fixed_public_ip.is_some() {
+            return voice.fixed_public_ip;
+        }
+        if let Some((at, ip)) = voice.resolved
+            && at.elapsed() < PUBLIC_IP_TTL
+        {
+            return Some(ip);
+        }
+        voice.public_host.clone()?
+    };
+    let resolved = crate::dns::resolve_a(&host).await.map(IpAddr::V4);
+    let mut voice = voice.borrow_mut();
+    match resolved {
+        Some(ip) => {
+            if voice.resolved.map(|(_, old)| old) != Some(ip) {
+                println!("[voice] IP publique de {host} : {ip}");
+            }
+            voice.resolved = Some((Instant::now(), ip));
+            Some(ip)
+        }
+        None => {
+            eprintln!("[voice] résolution de {host} impossible");
+            voice.resolved.map(|(_, ip)| ip)
+        }
+    }
+}
+
 /// La seule tâche qui touche au socket : lit un datagramme (ou attend le prochain délai
 /// de str0m, au plus `IDLE_TICK`), puis fait avancer tout le monde et envoie.
 pub async fn run(voice: SharedVoice, socket: Rc<UdpSocket>) {
@@ -563,7 +635,7 @@ mod tests {
                 sdp: offer.to_sdp_string(),
                 ..Default::default()
             };
-            let answer = voice.join(self.conn, self.user, &req).unwrap();
+            let answer = voice.join(self.conn, self.user, &req, None).unwrap();
             self.rtc
                 .sdp_api()
                 .accept_answer(pending, SdpAnswer::from_sdp_string(&answer).unwrap())
@@ -656,7 +728,7 @@ mod tests {
 
     fn voice() -> Voice {
         let local: SocketAddr = "10.0.0.1:8443".parse().unwrap();
-        Voice::new(SharedRegistry::default(), local, vec![local])
+        Voice::new(SharedRegistry::default(), local)
     }
 
     /// Story 18 : trois personnes s'entendent ; une quatrième arrive, une part ; la
@@ -739,6 +811,20 @@ mod tests {
             "trou maximal entre deux paquets reçus : {:?}",
             browsers[1].max_gap
         );
+    }
+
+    /// Le domaine vient de l'en-tête `Host` ; une IP ou `localhost` ne compte pas.
+    #[test]
+    fn domaine_public_appris() {
+        let mut voice = voice();
+        voice.learn_host("127.0.0.1:8443");
+        voice.learn_host("localhost:5173");
+        voice.learn_host("[::1]:8443");
+        assert_eq!(voice.public_host, None);
+        voice.learn_host("Audio.Example.fr");
+        assert_eq!(voice.public_host.as_deref(), Some("audio.example.fr"));
+        voice.learn_host("audio.example.fr:443");
+        assert_eq!(voice.public_host.as_deref(), Some("audio.example.fr"));
     }
 
     /// Story 18 : un seul vocal par utilisateur — rejoindre ailleurs libère l'ancienne place.

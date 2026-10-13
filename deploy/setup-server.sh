@@ -27,6 +27,11 @@ if [[ ! -f /var/lib/audio/certs/cert.pem ]]; then
     chmod 600 /var/lib/audio/certs/key.pem
 fi
 
+# Vocal (story 18) : 443/udp, à côté du 443/tcp de nginx.
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 443/udp
+fi
+
 install -m 644 /tmp/audio.service /etc/systemd/system/audio.service
 systemctl daemon-reload
 systemctl enable audio

@@ -2,6 +2,7 @@ mod accounts;
 mod auth;
 mod channels;
 mod codec;
+mod dns;
 mod connection;
 mod dispatch;
 mod email;
