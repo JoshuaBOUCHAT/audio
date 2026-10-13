@@ -258,9 +258,15 @@ impl Voice {
     }
 
     /// Opus seul (comme le défaut de str0m) plus `usedtx=1` (story 71) : le navigateur
-    /// n'envoie presque rien pendant les silences.
+    /// n'envoie presque rien pendant les silences. Aucune remise en ordre à l'arrivée
+    /// (str0m retient sinon jusqu'à 15 paquets, 300 ms, après une perte) : chaque
+    /// paquet repart aussitôt, le navigateur qui écoute comble les trous — la mémoire
+    /// tampon d'un SFU, c'est de la latence pour tout le monde.
     fn new_rtc(&self) -> Rtc {
-        let mut config = Rtc::builder().set_ice_lite(true).clear_codecs();
+        let mut config = Rtc::builder()
+            .set_ice_lite(true)
+            .set_reordering_size_audio(0)
+            .clear_codecs();
         config.codec_config().add_config(
             Pt::from(111),
             None,
@@ -513,6 +519,12 @@ mod tests {
         last_frame: Option<Instant>,
         /// Paquets audio reçus, par piste.
         received: Vec<(Mid, usize)>,
+        /// Plus long silence entre deux paquets audio reçus, toutes pistes confondues.
+        last_audio: Option<Instant>,
+        max_gap: Duration,
+        /// Perd un datagramme sur `lossy` à l'envoi (0 = réseau parfait).
+        lossy: usize,
+        sent: usize,
         /// Piste → utilisateur, d'après le dernier VoiceOffer.
         tracks: Vec<proto::VoiceTrack>,
         /// Lignes `m=` du dernier VoiceOffer.
@@ -533,6 +545,10 @@ mod tests {
                 speaking: true,
                 last_frame: None,
                 received: Vec::new(),
+                last_audio: None,
+                max_gap: Duration::ZERO,
+                lossy: 0,
+                sent: 0,
                 tracks: Vec::new(),
                 m_lines: 0,
             }
@@ -615,8 +631,17 @@ mod tests {
                 loop {
                     match b.rtc.poll_output().unwrap() {
                         Output::Timeout(_) => break,
-                        Output::Transmit(t) => voice.receive(*now, b.addr, &t.contents),
+                        Output::Transmit(t) => {
+                            b.sent += 1;
+                            if b.lossy == 0 || b.sent % b.lossy != 0 {
+                                voice.receive(*now, b.addr, &t.contents);
+                            }
+                        }
                         Output::Event(Event::MediaData(data)) => {
+                            if let Some(last) = b.last_audio {
+                                b.max_gap = b.max_gap.max(*now - last);
+                            }
+                            b.last_audio = Some(*now);
                             match b.received.iter_mut().find(|(mid, _)| *mid == data.mid) {
                                 Some((_, n)) => *n += 1,
                                 None => b.received.push((data.mid, 1)),
@@ -690,6 +715,30 @@ mod tests {
         let after_silence: Vec<usize> = browsers.iter().map(|b| b.heard(4)).collect();
         run_for(&mut voice, &mut browsers, &mut now, 1000);
         assert_eq!(browsers.iter().map(|b| b.heard(4)).collect::<Vec<_>>(), after_silence);
+    }
+
+    /// Latence : un paquet perdu ne doit pas bloquer la suite. Le serveur transmet sans
+    /// attendre de retransmission ; c'est au navigateur qui écoute de combler le trou.
+    #[test]
+    fn une_perte_ne_bloque_pas_la_voix() {
+        let mut now = Instant::now();
+        let mut voice = voice();
+        let mut browsers: Vec<Browser> = (1..=2).map(|u| Browser::new(u, now)).collect();
+        browsers[1].speaking = false;
+        for b in &mut browsers {
+            b.join(&mut voice);
+        }
+        run_for(&mut voice, &mut browsers, &mut now, 2000);
+        browsers[0].lossy = 7;
+        browsers[1].max_gap = Duration::ZERO;
+        browsers[1].last_audio = None;
+        run_for(&mut voice, &mut browsers, &mut now, 3000);
+        assert!(browsers[1].heard(1) > 100, "le 2 entend le 1 : {}", browsers[1].heard(1));
+        assert!(
+            browsers[1].max_gap <= Duration::from_millis(60),
+            "trou maximal entre deux paquets reçus : {:?}",
+            browsers[1].max_gap
+        );
     }
 
     /// Story 18 : un seul vocal par utilisateur — rejoindre ailleurs libère l'ancienne place.
