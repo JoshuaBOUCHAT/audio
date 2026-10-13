@@ -1,13 +1,18 @@
 // Stories 65 et 68 : onglet Administration des paramètres, visible de l'admin seul —
 // invitations à usage unique (durée choisie, liste, révocation) et liens de connexion
-// de dépannage pour un membre.
+// de dépannage pour un membre, débit des vocaux (story 79).
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Copy, Link as LinkIcon, Trash2, UserPlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import type { chat } from "@/proto/messages.js"
 import { toNumber } from "./model"
 import type { ChatState, ChatStore } from "./store"
+import { DEFAULT_VOICE_BITRATE } from "./store-voice"
+
+/** Story 79 : plage d'Opus, en kbps. */
+const MIN_BITRATE = 6
+const MAX_BITRATE = 510
 
 const DURATIONS = [
   { label: "1 heure", seconds: 3600 },
@@ -173,6 +178,102 @@ export function AdminSettings({ state, store }: { state: ChatState; store: ChatS
           </>
         )}
       </section>
+
+      <VoiceBitrates state={state} store={store} />
+    </div>
+  )
+}
+
+/** Story 79 : débit par défaut des vocaux, et celui de chaque salon qui le remplace. */
+function VoiceBitrates({ state, store }: { state: ChatState; store: ChatStore }) {
+  const fallback = state.voiceBitrates[0] ?? DEFAULT_VOICE_BITRATE
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h3 className="text-sm font-medium">Débit audio des vocaux</h3>
+        <p className="text-xs text-muted-foreground">
+          De {MIN_BITRATE} à {MAX_BITRATE} kbps. Plus haut, la voix est plus nette, mais chacun envoie et reçoit
+          davantage : le serveur relaie le débit de chacun vers tous les autres. 64 kbps suffit pour la voix ; au-delà
+          de 128 kbps, la différence ne s'entend guère que pour de la musique.
+        </p>
+      </div>
+      <BitrateControl
+        label="Par défaut"
+        value={fallback}
+        onCommit={(kbps) => void store.setVoiceBitrate(0, kbps)}
+      />
+      {state.voiceChannels.map((c) => {
+        const own = state.voiceBitrates[c.id]
+        return (
+          <div key={c.id} className="flex flex-col gap-1.5 border-t pt-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={own !== undefined}
+                onChange={(e) => void store.setVoiceBitrate(c.id, e.target.checked ? fallback : 0)}
+              />
+              <span className="truncate">{c.name}</span>
+              <span className="text-xs text-muted-foreground">
+                {own === undefined ? `suit le défaut (${fallback} kbps)` : "débit propre"}
+              </span>
+            </label>
+            {own !== undefined && (
+              <BitrateControl label="" value={own} onCommit={(kbps) => void store.setVoiceBitrate(c.id, kbps)} />
+            )}
+          </div>
+        )
+      })}
+    </section>
+  )
+}
+
+/** Curseur et champ liés ; envoyé une fois la valeur immobile (pas à chaque cran). */
+function BitrateControl({ label, value, onCommit }: { label: string; value: number; onCommit: (kbps: number) => void }) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+  // Paramètres fermés avant les 500 ms : envoyé quand même.
+  const pending = useRef<{ kbps: number; timer: ReturnType<typeof setTimeout> } | null>(null)
+  const flush = () => {
+    if (!pending.current) return
+    clearTimeout(pending.current.timer)
+    onCommit(pending.current.kbps)
+    pending.current = null
+  }
+  const flushRef = useRef(flush)
+  flushRef.current = flush
+  useEffect(() => () => flushRef.current(), [])
+  const change = (text: string) => {
+    setDraft(text)
+    if (pending.current) clearTimeout(pending.current.timer)
+    pending.current = null
+    const kbps = Number(text)
+    if (!Number.isInteger(kbps) || kbps < MIN_BITRATE || kbps > MAX_BITRATE || kbps === value) return
+    pending.current = { kbps, timer: setTimeout(() => flushRef.current(), 500) }
+  }
+  const invalid = !(Number(draft) >= MIN_BITRATE && Number(draft) <= MAX_BITRATE)
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      {label && <span className="w-20 shrink-0">{label}</span>}
+      <input
+        type="range"
+        className="min-w-0 flex-1"
+        min={MIN_BITRATE}
+        max={MAX_BITRATE}
+        value={invalid ? value : Number(draft)}
+        onChange={(e) => change(e.target.value)}
+      />
+      <label className="flex shrink-0 items-center gap-1">
+        <input
+          type="number"
+          min={MIN_BITRATE}
+          max={MAX_BITRATE}
+          value={draft}
+          onChange={(e) => change(e.target.value)}
+          onBlur={() => invalid && setDraft(String(value))}
+          className={`${selectClass} w-20 tabular-nums ${invalid ? "border-destructive" : ""}`}
+        />
+        kbps
+      </label>
     </div>
   )
 }

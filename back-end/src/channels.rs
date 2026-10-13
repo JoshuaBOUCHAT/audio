@@ -1,10 +1,10 @@
-//! Salons et DM (stories 7-8, 28-32).
+//! Salons et DM (stories 7-8, 28-32), débit des vocaux (story 79).
 
 use oxidart::krange::RangeVal;
 use oxidart::{OxidArt, Value};
 use radixox_lib::shared_byte::SharedByte;
 
-use crate::dispatch::require_auth;
+use crate::dispatch::{require_admin, require_auth};
 use crate::users::require_pseudo;
 use crate::{AppState, codec, keys, proto, validate};
 
@@ -139,6 +139,94 @@ pub fn open_dm(
     Ok(conversation(&art, channel))
 }
 
+/// Story 18 : `id` désigne un salon vocal existant.
+pub fn is_voice_channel(art: &mut OxidArt, id: u64) -> bool {
+    keys::is_sortable(id)
+        && art.get(keys::channel_key(id).as_bytes()).is_some_and(|val| {
+            let channel: proto::Channel = codec::decode(
+                val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
+                "channel:{id}",
+            );
+            channel.r#type() == proto::channel::Type::Voice
+        })
+}
+
+/// Story 79 : débit des vocaux en kbps, plage d'Opus.
+pub const DEFAULT_VOICE_BITRATE: u32 = 64;
+const VOICE_BITRATE_RANGE: std::ops::RangeInclusive<u32> = 6..=510;
+const VOICE_BITRATE_DEFAULT_KEY: &str = "voice_bitrate_default";
+/// `voice_bitrate:{salon}` → kbps ; clé absente = le salon suit le défaut. Hors de
+/// `Channel` (bincode strict, cf. user-stories.md).
+const VOICE_BITRATE_PREFIX: &str = "voice_bitrate:";
+
+/// Story 79 : le défaut (`channel_id` 0) puis les salons qui ont leur propre débit.
+pub fn voice_bitrates(art: &mut OxidArt) -> Vec<proto::VoiceBitrate> {
+    let default = match art.get(VOICE_BITRATE_DEFAULT_KEY.as_bytes()) {
+        Some(Value::Int(kbps)) => kbps as u32,
+        _ => DEFAULT_VOICE_BITRATE,
+    };
+    let mut bitrates = vec![proto::VoiceBitrate {
+        channel_id: 0,
+        kbps: default,
+    }];
+    bitrates.extend(
+        art.krange(VOICE_BITRATE_PREFIX.as_bytes(), b"", usize::MAX, false)
+            .iter()
+            .filter_map(|(key, val)| {
+                let channel_id = keys::parse_sortable_id(&key[VOICE_BITRATE_PREFIX.len()..])?;
+                let RangeVal::Int(kbps) = val else { return None };
+                Some(proto::VoiceBitrate {
+                    channel_id,
+                    kbps: kbps as u32,
+                })
+            }),
+    );
+    bitrates
+}
+
+/// Story 79 (admin) : `channel_id` 0 = le défaut ; `kbps` 0 = le salon (ou le défaut)
+/// revient à la valeur par défaut.
+pub fn set_voice_bitrate(
+    req: proto::SetVoiceBitrate,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::VoiceBitrate, proto::Error> {
+    let mut art = state.art.borrow_mut();
+    require_admin(&mut art, user_id)?;
+    if req.kbps != 0 && !VOICE_BITRATE_RANGE.contains(&req.kbps) {
+        return Err(proto::Error {
+            code: 400,
+            message: format!(
+                "débit entre {} et {} kbps",
+                VOICE_BITRATE_RANGE.start(),
+                VOICE_BITRATE_RANGE.end()
+            ),
+        });
+    }
+    let key = if req.channel_id == 0 {
+        VOICE_BITRATE_DEFAULT_KEY.to_string()
+    } else if is_voice_channel(&mut art, req.channel_id) {
+        format!("{VOICE_BITRATE_PREFIX}{}", keys::sortable_id(req.channel_id))
+    } else {
+        return Err(proto::Error {
+            code: 404,
+            message: "salon vocal inconnu".to_string(),
+        });
+    };
+    if req.kbps == 0 {
+        art.del(key.as_bytes());
+    } else {
+        art.set(SharedByte::from_str(&key), Value::Int(req.kbps as i64));
+    }
+    state.dirty.set(true);
+    // Le défaut remis à zéro vaut de nouveau 64 kbps : c'est ce que les clients doivent appliquer.
+    let kbps = if req.channel_id == 0 && req.kbps == 0 { DEFAULT_VOICE_BITRATE } else { req.kbps };
+    Ok(proto::VoiceBitrate {
+        channel_id: req.channel_id,
+        kbps,
+    })
+}
+
 /// Valeur d'une entrée de `krange` : audio ne stocke que des `Value::String`.
 pub fn range_bytes<'a>(val: RangeVal<'a>, what: &str) -> &'a [u8] {
     match val {
@@ -198,4 +286,24 @@ pub fn create_channel(
     );
     state.dirty.set(true);
     Ok(channel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Story 79 : défaut à 64 kbps tant que rien n'est réglé, puis les salons réglés.
+    #[test]
+    fn debits_des_vocaux() {
+        let mut art = OxidArt::new();
+        let bitrates = voice_bitrates(&mut art);
+        assert_eq!(bitrates.len(), 1);
+        assert_eq!((bitrates[0].channel_id, bitrates[0].kbps), (0, DEFAULT_VOICE_BITRATE));
+
+        art.set(SharedByte::from_str(VOICE_BITRATE_DEFAULT_KEY), Value::Int(32));
+        let key = format!("{VOICE_BITRATE_PREFIX}{}", keys::sortable_id(7));
+        art.set(SharedByte::from_str(&key), Value::Int(256));
+        let bitrates: Vec<_> = voice_bitrates(&mut art).iter().map(|b| (b.channel_id, b.kbps)).collect();
+        assert_eq!(bitrates, [(0, 32), (7, 256)]);
+    }
 }

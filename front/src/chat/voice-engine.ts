@@ -52,23 +52,23 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
 }
 
 /**
- * Débit Opus demandé à l'émetteur : 64 kbps au lieu des ~32 de Chrome, voix plus nette
- * et place pour la correction d'erreurs intégrée (FEC, `useinbandfec=1`, déjà
- * négociée : chaque paquet porte une version allégée du précédent, qui remplace un
- * paquet perdu sans latence ajoutée). Trames de 20 ms : plus longues, ce serait autant
- * de latence en plus.
+ * Débit Opus de l'émetteur, choisi par l'admin (story 79, 64 kbps par défaut au lieu
+ * des ~32 de Chrome : voix plus nette et place pour la correction d'erreurs intégrée,
+ * FEC, `useinbandfec=1`, déjà négociée : chaque paquet porte une version allégée du
+ * précédent, qui remplace un paquet perdu sans latence ajoutée). Trames de 20 ms :
+ * plus longues, ce serait autant de latence en plus. Inscrit dans chaque négociation
+ * (`maxaveragebitrate`) et appliqué à chaud (`setParameters`) quand il change.
  */
-const OPUS_BITRATE = 64_000
 
 /**
  * str0m ne sait pas annoncer `maxaveragebitrate` : ajouté à la description du serveur
  * avant de l'appliquer. Côté émetteur, c'est elle qui fixe le débit d'encodage.
  */
-function withOpusBitrate(sdp: string): string {
+function withOpusBitrate(sdp: string, kbps: number): string {
   const opus = /^a=rtpmap:(\d+) opus\/48000/im.exec(sdp)?.[1]
   if (!opus) return sdp
   return sdp.replace(new RegExp(`^(a=fmtp:${opus} .*)$`, "gm"), (line) =>
-    line.includes("maxaveragebitrate") ? line : `${line};maxaveragebitrate=${OPUS_BITRATE}`,
+    line.includes("maxaveragebitrate") ? line : `${line};maxaveragebitrate=${kbps * 1000}`,
   )
 }
 
@@ -170,6 +170,8 @@ export class VoiceEngine {
   /** `mid` → personne, d'après le dernier VoiceOffer. */
   private mapping = new Map<string, number>()
   private volumes: Record<number, number> = {}
+  /** Story 79 : kbps. */
+  private bitrate = 64
   private queue: Promise<unknown> = Promise.resolve()
   private speakingTimer: ReturnType<typeof setInterval> | null = null
   private readonly othersSpeaking = new Set<number>()
@@ -186,7 +188,8 @@ export class VoiceEngine {
   }
 
   /** Micro et graphe audio ; rend l'offre SDP (sans candidats ICE, pas de trickle). */
-  async start(muted: boolean, deafened: boolean, volumes: Record<number, number>): Promise<string> {
+  async start(muted: boolean, deafened: boolean, volumes: Record<number, number>, bitrate: number): Promise<string> {
+    this.bitrate = bitrate
     this.muted = muted
     this.deafened = deafened
     this.volumes = volumes
@@ -213,7 +216,7 @@ export class VoiceEngine {
   /** Réponse du serveur à notre offre (`VoiceJoined`). */
   applyAnswer(sdp: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.pc?.setRemoteDescription({ type: "answer", sdp: withOpusBitrate(sdp) })
+      await this.pc?.setRemoteDescription({ type: "answer", sdp: withOpusBitrate(sdp, this.bitrate) })
     })
   }
 
@@ -222,7 +225,7 @@ export class VoiceEngine {
     return this.enqueue(async () => {
       const pc = this.pc
       if (!pc) return null
-      await pc.setRemoteDescription({ type: "offer", sdp: withOpusBitrate(sdp) })
+      await pc.setRemoteDescription({ type: "offer", sdp: withOpusBitrate(sdp, this.bitrate) })
       this.mapping = new Map(tracks.map((t) => [t.mid, t.userId]))
       for (const mid of this.pipes.keys()) this.applyVolume(mid)
       await pc.setLocalDescription(await pc.createAnswer())
@@ -241,6 +244,20 @@ export class VoiceEngine {
   setPttHeld(held: boolean): void {
     this.pttHeld = held
     this.updateSending()
+  }
+
+  /** Story 79 : débit changé par l'admin pendant le vocal. */
+  setBitrate(kbps: number): void {
+    if (kbps === this.bitrate) return
+    this.bitrate = kbps
+    void this.enqueue(async () => {
+      for (const sender of this.pc?.getSenders() ?? []) {
+        const params = sender.getParameters()
+        if (!params.encodings?.length) continue
+        params.encodings[0].maxBitrate = kbps * 1000
+        await sender.setParameters(params)
+      }
+    }).catch(() => undefined)
   }
 
   setVolumes(volumes: Record<number, number>): void {

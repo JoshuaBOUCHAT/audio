@@ -210,6 +210,7 @@ message ClientEnvelope {
     VoiceAnswer       voice_answer       = 42; // story 18
     SetVoiceState     set_voice_state    = 43; // story 73
     SetVoiceVolume    set_voice_volume   = 44; // story 76
+    SetVoiceBitrate   set_voice_bitrate  = 45; // story 79 (admin)
   }
   reserved 22;
 }
@@ -424,6 +425,14 @@ message SetVoiceVolume {
   uint32 volume = 2;
 }
 
+// Story 79 (admin) : débit audio en kbps (6-510). `channel_id` 0 = le défaut de tous
+// les vocaux ; sinon un salon vocal, `kbps` 0 = il revient au défaut. Réponse :
+// VoiceBitrate, aussi diffusé à tous.
+message SetVoiceBitrate {
+  uint64 channel_id = 1;
+  uint32 kbps = 2;
+}
+
 // ═══════════════════════════════════
 // SERVEUR → CLIENT
 // ═══════════════════════════════════
@@ -464,6 +473,7 @@ message ServerEnvelope {
     VoiceChanged    voice_changed     = 32; // story 22, broadcast
     VoiceStateSet   voice_state_set   = 33; // story 73
     VoiceVolumeSet  voice_volume_set  = 34; // story 76
+    VoiceBitrate    voice_bitrate     = 35; // story 79, broadcast
   }
 }
 
@@ -493,6 +503,9 @@ message AuthResponse {
   repeated VoiceChanged voice = 9;
   // Story 76 : mes volumes par personne (absents = 100 %).
   repeated VoiceVolumeSet voice_volumes = 10;
+  // Story 79 : le défaut (`channel_id` 0, toujours présent) puis les salons qui ont
+  // leur propre débit.
+  repeated VoiceBitrate voice_bitrates = 11;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -605,6 +618,12 @@ message VoiceStateSet {}
 message VoiceVolumeSet {
   uint64 user_id = 1;
   uint32 volume = 2; // %
+}
+
+// Story 79 : `channel_id` 0 = le défaut ; `kbps` 0 = le salon suit le défaut.
+message VoiceBitrate {
+  uint64 channel_id = 1;
+  uint32 kbps = 2;
 }
 
 // Story 68 : lien `{origine}/?token={token}` (lien magique, usage unique).

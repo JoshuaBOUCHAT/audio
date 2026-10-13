@@ -6,7 +6,7 @@ use oxidart::{OxidArt, Value};
 use radixox_lib::shared_byte::SharedByte;
 use uuid::Uuid;
 
-use crate::channels::{list_channels, list_dms};
+use crate::channels::{list_channels, list_dms, voice_bitrates};
 use crate::dispatch::require_auth;
 use crate::email::Email;
 use crate::users::{list_profiles, load_user, pseudo_index_key, save_user, voice_volumes};
@@ -151,6 +151,7 @@ pub fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uu
         .collect();
     let settings = Some(reads::settings(art, user.id));
     let voice_volumes = voice_volumes(art, user.id);
+    let voice_bitrates = voice_bitrates(art);
     proto::AuthResponse {
         me: Some(user),
         channels,
@@ -162,6 +163,7 @@ pub fn auth_response(art: &mut OxidArt, mut user: proto::User, session_token: Uu
         settings,
         voice: Vec::new(), // rempli par `authenticated`, comme la présence
         voice_volumes,
+        voice_bitrates,
     }
 }
 

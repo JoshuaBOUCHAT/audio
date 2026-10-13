@@ -1,9 +1,18 @@
 // Vocal (stories 18, 21-22, 70-76) : rejoindre / quitter, négociation avec le serveur,
 // micro coupé et sourdine, volumes par personne, réglages de l'appareil, sons
-// d'arrivée / départ (story 77), push-to-talk (story 78). Le son lui-même
+// d'arrivée / départ (story 77), push-to-talk (story 78), débit choisi par l'admin
+// (story 79). Le son lui-même
 // vit dans `VoiceEngine` ; ici, l'état affiché et le dialogue avec le serveur.
 
-import { createChannel, joinVoice, leaveVoice, setVoiceState, setVoiceVolume, voiceAnswer } from "@/lib/protocol"
+import {
+  createChannel,
+  joinVoice,
+  leaveVoice,
+  setVoiceBitrate,
+  setVoiceState,
+  setVoiceVolume,
+  voiceAnswer,
+} from "@/lib/protocol"
 import { chat } from "@/proto/messages.js"
 import { isVoiceChannel, toChannel, toNumber, toVoiceMembers, type ChatChannel } from "./model"
 import { playVoiceSound } from "./sounds"
@@ -12,6 +21,9 @@ import { DEFAULT_VOICE_PREFS, micLevelTest, VoiceEngine, type VoicePrefs } from 
 
 const PREFS_KEY = "voice-prefs"
 const SELF_KEY = "voice-self"
+/** Story 79 : sans réglage de l'admin. */
+export const DEFAULT_VOICE_BITRATE = 64
+
 /** Story 78 : la voix part encore un instant après la touche relâchée (fin de mot). */
 const PTT_RELEASE_MS = 150
 
@@ -77,7 +89,7 @@ export abstract class VoiceLayer extends ConversationsLayer {
     this.set({ voice: { channelId, connected: false } })
     let offer: string
     try {
-      offer = await engine.start(muted, deafened, this.state.voiceVolumes)
+      offer = await engine.start(muted, deafened, this.state.voiceVolumes, this.voiceBitrate(channelId))
     } catch (e) {
       this.stopEngine()
       this.set({ voice: null, error: `micro inaccessible : ${e instanceof Error ? e.message : String(e)}` })
@@ -140,6 +152,16 @@ export abstract class VoiceLayer extends ConversationsLayer {
   /** Curseur en cours de glissement : entendu tout de suite, rien d'envoyé. */
   previewVoiceVolume = (userId: number, volume: number): void => {
     this.engine?.setVolumes({ ...this.state.voiceVolumes, [userId]: volume })
+  }
+
+  /** Story 79 : débit d'un salon vocal (le sien, sinon le défaut), en kbps. */
+  voiceBitrate = (channelId: number): number =>
+    this.state.voiceBitrates[channelId] ?? this.state.voiceBitrates[0] ?? DEFAULT_VOICE_BITRATE
+
+  /** Story 79 (admin) : `channelId` 0 = le défaut, `kbps` 0 = revenir au défaut. */
+  setVoiceBitrate = async (channelId: number, kbps: number): Promise<void> => {
+    const set = (await this.request(setVoiceBitrate(channelId, kbps)))?.voiceBitrate
+    if (set) this.onVoiceBitrate(set)
   }
 
   voiceVolume = (userId: number): number => this.state.voiceVolumes[userId] ?? 100
@@ -258,7 +280,10 @@ export abstract class VoiceLayer extends ConversationsLayer {
     const voiceVolumes: Record<number, number> = {}
     for (const v of auth.voiceVolumes ?? []) voiceVolumes[toNumber(v.userId)] = v.volume ?? 100
     const voiceChannels: ChatChannel[] = (auth.channels ?? []).filter(isVoiceChannel).map(toChannel)
-    this.set({ voiceChannels, voiceMembers, voiceVolumes })
+    const voiceBitrates: Record<number, number> = {}
+    for (const b of auth.voiceBitrates ?? []) voiceBitrates[toNumber(b.channelId)] = b.kbps ?? DEFAULT_VOICE_BITRATE
+    this.set({ voiceChannels, voiceMembers, voiceVolumes, voiceBitrates })
+    this.applyBitrate()
     const rejoin = this.rejoinChannel
     this.rejoinChannel = null
     if (rejoin !== null && voiceChannels.some((c) => c.id === rejoin)) void this.joinVoice(rejoin)
@@ -267,6 +292,17 @@ export abstract class VoiceLayer extends ConversationsLayer {
   protected addVoiceChannel(channel: ChatChannel): void {
     if (this.state.voiceChannels.some((c) => c.id === channel.id)) return
     this.set({ voiceChannels: [...this.state.voiceChannels, channel].sort((a, b) => a.id - b.id) })
+  }
+
+  protected onVoiceBitrate(set: chat.IVoiceBitrate): void {
+    const voiceBitrates = { ...this.state.voiceBitrates, [toNumber(set.channelId)]: set.kbps ?? 0 }
+    if (!set.kbps) delete voiceBitrates[toNumber(set.channelId)]
+    this.set({ voiceBitrates })
+    this.applyBitrate()
+  }
+
+  private applyBitrate(): void {
+    if (this.state.voice) this.engine?.setBitrate(this.voiceBitrate(this.state.voice.channelId))
   }
 
   protected onVoiceVolumeSet(set: chat.IVoiceVolumeSet): void {

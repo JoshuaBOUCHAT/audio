@@ -55,6 +55,11 @@ export function setVoiceVolume(userId: number, volume: number): ClientEnvelopeSh
   return { payload: "setVoiceVolume", setVoiceVolume: { userId, volume } };
 }
 
+/** Story 79 (admin) : `channelId` 0 = le défaut, `kbps` 0 = revenir au défaut. */
+export function setVoiceBitrate(channelId: number, kbps: number): ClientEnvelopeShape {
+  return { payload: "setVoiceBitrate", setVoiceBitrate: { channelId, kbps } };
+}
+
 /** `replyToId` : message cité (story 39), 0 = pas une réponse. */
 export function sendMessage(channelId: number, content: string, replyToId = 0): ClientEnvelopeShape {
   return { payload: "sendMessage", sendMessage: { channelId, content, replyToId } };

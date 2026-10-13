@@ -77,6 +77,8 @@ export type ChatState = {
   voiceVolumes: Record<number, number>
   /** Stories 71, 74, 75 : réglages de l'appareil. */
   voicePrefs: VoicePrefs
+  /** Story 79 : débit des vocaux en kbps, `0` = le défaut, sinon les salons réglés. */
+  voiceBitrates: Record<number, number>
 }
 
 export const INITIAL: ChatState = {
@@ -103,6 +105,7 @@ export const INITIAL: ChatState = {
   speaking: new Set(),
   voiceVolumes: {},
   voicePrefs: DEFAULT_VOICE_PREFS,
+  voiceBitrates: {},
 }
 
 /** Story 23 : vu par les autres. Pour soi, on suit son propre choix (story 41). */

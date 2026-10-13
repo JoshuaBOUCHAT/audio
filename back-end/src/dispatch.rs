@@ -4,7 +4,7 @@
 use oxidart::OxidArt;
 
 use crate::auth::{accept_invite, handle_auth, password_login, set_password};
-use crate::channels::{create_channel, open_dm};
+use crate::channels::{create_channel, is_voice_channel, open_dm, set_voice_bitrate};
 use crate::connection::{event, notify, server_frame};
 use crate::media::get_media_info;
 use crate::messages::{delete_message, edit_message, load_conversation, send_message, sync_messages};
@@ -13,7 +13,7 @@ use crate::users::{
     get_avatar, load_user, require_pseudo, set_avatar, set_bio, set_pseudo, set_status, set_theme, set_voice_volume,
     user_updated,
 };
-use crate::{AppState, accounts, codec, keys, media, presence, proto, reads, validate, voice};
+use crate::{AppState, accounts, keys, media, presence, proto, reads, validate, voice};
 
 pub async fn handle_client_envelope(
     envelope: proto::ClientEnvelope,
@@ -333,6 +333,14 @@ pub async fn handle_client_envelope(
             }
             Err(err) => proto::server_envelope::Payload::Error(err),
         },
+        Some(Payload::SetVoiceBitrate(req)) => match set_voice_bitrate(req, state, *user_id) {
+            Ok(set) => {
+                let set = proto::server_envelope::Payload::VoiceBitrate(set);
+                registry::broadcast(&state.registry, conn, &event(set.clone()));
+                set
+            }
+            Err(err) => proto::server_envelope::Payload::Error(err),
+        },
         Some(Payload::VoiceAnswer(req)) => {
             let answered = require_auth(*user_id).and_then(|_| state.voice.borrow_mut().answer(conn, req.offer_id, &req.sdp));
             match answered {
@@ -389,15 +397,7 @@ async fn join_voice(
     {
         let mut art = state.art.borrow_mut();
         require_pseudo(&mut art, user_id)?;
-        let is_voice = keys::is_sortable(req.channel_id)
-            && art.get(keys::channel_key(req.channel_id).as_bytes()).is_some_and(|val| {
-                let channel: proto::Channel = codec::decode(
-                    val.as_bytes().expect("channel:{id} toujours Value::String").as_slice(),
-                    "channel:{id}",
-                );
-                channel.r#type() == proto::channel::Type::Voice
-            });
-        if !is_voice {
+        if !is_voice_channel(&mut art, req.channel_id) {
             return Err(proto::Error {
                 code: 404,
                 message: "salon vocal inconnu".to_string(),

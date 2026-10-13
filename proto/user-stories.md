@@ -561,6 +561,18 @@ suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1
     (fin de mot). Raccourci actif seulement quand l'onglet a le focus (global avec
     l'app Tauri) ; au doigt ou à la souris, un bouton « Maintenir pour parler » dans
     la barre du vocal. Le micro coupé l'emporte.
+79. En tant qu'admin, je veux régler le **débit audio** des vocaux : un débit par
+    défaut, et un débit propre à chaque salon vocal qui le remplace.
+    **Décisions** (2026-10-13) : en kbps, de 6 à 510 (toute la plage d'Opus, pas de
+    limite arbitraire en dessous) ; défaut 64 kbps. Un salon sans réglage suit le
+    défaut. Clés dédiées `voice_bitrate_default` et `voice_bitrate:{salon}` (un
+    entier ; clé absente = suit le défaut), **hors de `Channel`** : ce type est stocké
+    en bincode strict, un champ de plus casserait la relecture en release.
+    `SetVoiceBitrate` (admin, `channel_id` 0 = le défaut, `kbps` 0 = revenir au
+    défaut), diffusé à tous (`VoiceBitrate`) ; état initial dans `AuthResponse`.
+    Appliqué par chaque navigateur à **ce qu'il envoie** (le SFU ne décode rien) : à
+    chaud par `RTCRtpSender.setParameters`, et dans chaque négociation
+    (`maxaveragebitrate`).
 
 ---
 

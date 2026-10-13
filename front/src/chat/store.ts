@@ -409,6 +409,9 @@ export class ChatStore extends VoiceLayer {
       case "voiceVolumeSet":
         if (envelope.voiceVolumeSet) this.onVoiceVolumeSet(envelope.voiceVolumeSet)
         break
+      case "voiceBitrate":
+        if (envelope.voiceBitrate) this.onVoiceBitrate(envelope.voiceBitrate)
+        break
     }
   }
 }
