@@ -22,7 +22,7 @@ rust-embed = "8.11.0"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-acme = "0.15.3"
 serde = { version = "1.0.228", features = ["derive"] }
-str0m = "0.21.0"
+str0m = { version = "0.21.0", default-features = false, features = ["aws-lc-rs"] }
 uuid = { version = "1.23.4", features = ["v4"] }
 
 # bcrypt au coût 12 : sans optimisation, une connexion prendrait plusieurs secondes en dev.
