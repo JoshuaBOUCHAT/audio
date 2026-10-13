@@ -37,6 +37,27 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   echoCancellation: true,
 }
 
+/**
+ * Débit Opus demandé à l'émetteur : 64 kbps au lieu des ~32 de Chrome, voix plus nette
+ * et place pour la correction d'erreurs intégrée (FEC, `useinbandfec=1`, déjà
+ * négociée : chaque paquet porte une version allégée du précédent, qui remplace un
+ * paquet perdu sans latence ajoutée). Trames de 20 ms : plus longues, ce serait autant
+ * de latence en plus.
+ */
+const OPUS_BITRATE = 64_000
+
+/**
+ * str0m ne sait pas annoncer `maxaveragebitrate` : ajouté à la description du serveur
+ * avant de l'appliquer. Côté émetteur, c'est elle qui fixe le débit d'encodage.
+ */
+function withOpusBitrate(sdp: string): string {
+  const opus = /^a=rtpmap:(\d+) opus\/48000/im.exec(sdp)?.[1]
+  if (!opus) return sdp
+  return sdp.replace(new RegExp(`^(a=fmtp:${opus} .*)$`, "gm"), (line) =>
+    line.includes("maxaveragebitrate") ? line : `${line};maxaveragebitrate=${OPUS_BITRATE}`,
+  )
+}
+
 /** Silence au-delà duquel l'envoi s'arrête : ne pas manger les fins de mots. */
 const HANGOVER_MS = 400
 /** Niveau au-dessus duquel une personne reçue « parle » (story 72). */
@@ -158,7 +179,7 @@ export class VoiceEngine {
   /** Réponse du serveur à notre offre (`VoiceJoined`). */
   applyAnswer(sdp: string): Promise<void> {
     return this.enqueue(async () => {
-      await this.pc?.setRemoteDescription({ type: "answer", sdp })
+      await this.pc?.setRemoteDescription({ type: "answer", sdp: withOpusBitrate(sdp) })
     })
   }
 
@@ -167,7 +188,7 @@ export class VoiceEngine {
     return this.enqueue(async () => {
       const pc = this.pc
       if (!pc) return null
-      await pc.setRemoteDescription({ type: "offer", sdp })
+      await pc.setRemoteDescription({ type: "offer", sdp: withOpusBitrate(sdp) })
       this.mapping = new Map(tracks.map((t) => [t.mid, t.userId]))
       for (const mid of this.pipes.keys()) this.applyVolume(mid)
       await pc.setLocalDescription(await pc.createAnswer())
