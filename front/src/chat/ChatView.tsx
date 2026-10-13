@@ -1,10 +1,11 @@
 // Vue principale : colonne de gauche qui bascule entre salons (création si admin,
 // stories 7, 70 ; salons vocaux en dessous, stories 18-22) et conversations privées
 // (stories 28-30), fil de la conversation choisie (`ChannelFeed`), membres à droite
-// (story 23, carte de profil au clic, story 44).
+// (story 23, carte de profil au clic, story 44). Fenêtre étroite : la colonne de gauche
+// (sous 768 px) et les membres (sous 1024 px) passent en tiroirs par-dessus le fil.
 
-import { useEffect, useState } from "react"
-import { AtSign, Bell, BellOff, Hash, LogOut, MessageCircle, Plus, Settings, Users, Volume2 } from "lucide-react"
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
+import { AtSign, Bell, BellOff, Hash, LogOut, Menu, MessageCircle, Plus, Settings, Users, Volume2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -20,6 +21,38 @@ import { SelfVoiceButtons, VoiceBar, VoiceChannelList } from "./VoicePanel"
 type View = "channels" | "dms"
 
 const BASE_TITLE = document.title
+
+function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const list = matchMedia(query)
+      list.addEventListener("change", onChange)
+      return () => list.removeEventListener("change", onChange)
+    },
+    () => matchMedia(query).matches,
+  )
+}
+
+/** Panneau posé par-dessus le fil, fermé par Échap ou un clic à côté. */
+function Drawer({ side, onClose, children }: { side: "left" | "right"; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose()
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+  return (
+    <div className="fixed inset-0 z-20 flex animate-in bg-black/40 fade-in-0" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        className={cn(
+          "flex h-full max-w-[85vw] animate-in bg-background shadow-xl duration-200",
+          side === "left" ? "slide-in-from-left" : "ml-auto slide-in-from-right",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
 
 /** Story 56 : compteur de non-lus ; grisé pour une conversation coupée (story 58). */
 function UnreadBadge({ count, muted }: { count: number; muted: boolean }) {
@@ -46,6 +79,10 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     { kind: "person"; userId: number; x: number; y: number } | { kind: "channel"; channelId: number; x: number; y: number } | null
   >(null)
   const [membersOpen, setMembersOpen] = useState(true)
+  // Tiroir ouvert en fenêtre étroite ; la vue large ignore cet état.
+  const [drawer, setDrawer] = useState<"nav" | "members" | null>(null)
+  const wideNav = useMediaQuery("(min-width: 768px)")
+  const wideMembers = useMediaQuery("(min-width: 1024px)")
   const me = state.me!
   const pseudoOf = (userId: number) => state.users[userId]?.pseudo ?? `Utilisateur #${userId}`
 
@@ -110,180 +147,206 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     if (id === null) return
     setSelectedDm(id)
     setView("dms")
+    setDrawer(null)
   }
 
-  return (
-    <div className="flex h-svh">
-      <aside className="relative flex w-60 shrink-0 flex-col border-r bg-muted/40">
-        <div className="flex h-12 items-center gap-1 border-b px-2">
-          <div className="flex flex-1 rounded-lg bg-muted p-0.5" role="tablist">
-            {(["channels", "dms"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                role="tab"
-                aria-selected={view === v}
-                onClick={() => setView(v)}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1 text-sm text-muted-foreground",
-                  view === v && "bg-background font-medium text-foreground shadow-sm",
-                )}
-              >
-                {v === "channels" ? <Hash className="size-3.5" /> : <MessageCircle className="size-3.5" />}
-                {v === "channels" ? "Salons" : "Privé"}
-                <UnreadBadge count={v === "channels" ? channelUnread : dmUnread} muted={false} />
-              </button>
-            ))}
-          </div>
-          {view === "channels" && me.isAdmin && <CreateChannel store={store} />}
-        </div>
-
-        <nav className="flex-1 overflow-y-auto p-2">
-          {view === "channels" ? (
-            <>
-              {state.channels.map((c) => (
-                <div key={c.id} className="group/channel relative">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedChannel(c.id)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      setMenu({ kind: "channel", channelId: c.id, x: e.clientX, y: e.clientY })
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-1.5 rounded-md py-1.5 pr-8 pl-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
-                      c.id === channel?.id && "bg-muted font-medium text-foreground",
-                    )}
-                  >
-                    <Hash className="size-4 shrink-0" />
-                    <span
-                      className={cn(
-                        "truncate",
-                        (state.unread[c.id]?.count ?? 0) > 0 && !store.isMuted(c.id) && "font-semibold text-foreground",
-                      )}
-                    >
-                      {c.name}
-                    </span>
-                    {badge(c.id, "mentions")}
-                  </button>
-                  {/* Story 63 : réglage du salon ; visible au survol, ou s'il n'est pas au défaut. */}
-                  <button
-                    type="button"
-                    title="Notifications du salon"
-                    onClick={(e) => {
-                      const r = e.currentTarget.getBoundingClientRect()
-                      setMenu({ kind: "channel", channelId: c.id, x: r.right + 4, y: r.top })
-                    }}
-                    className={cn(
-                      "absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground",
-                      store.channelRule(c.id).level === "mentions" && !store.channelRule(c.id).silent
-                        ? "invisible group-hover/channel:visible"
-                        : "visible",
-                    )}
-                  >
-                    {store.channelRule(c.id).level === "nothing" ? (
-                      <BellOff className="size-3.5" />
-                    ) : (
-                      <Bell className="size-3.5" />
-                    )}
-                  </button>
-                </div>
-              ))}
-              {state.channels.length === 0 && state.voiceChannels.length === 0 && (
-                <p className="px-2 text-sm text-muted-foreground">
-                  {me.isAdmin ? "Aucun salon : crée le premier avec +." : "Aucun salon pour l'instant."}
-                </p>
+  const sidebar = (
+    <aside className="relative flex h-full w-60 shrink-0 flex-col border-r bg-muted/40">
+      <div className="flex h-12 items-center gap-1 border-b px-2">
+        <div className="flex flex-1 rounded-lg bg-muted p-0.5" role="tablist">
+          {(["channels", "dms"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1 text-sm text-muted-foreground",
+                view === v && "bg-background font-medium text-foreground shadow-sm",
               )}
-              <VoiceChannelList
-                state={state}
-                store={store}
-                onPersonMenu={(userId, x, y) => setMenu({ kind: "person", userId, x, y })}
-              />
-            </>
-          ) : (
-            <>
-              {dms.map((d) => (
+            >
+              {v === "channels" ? <Hash className="size-3.5" /> : <MessageCircle className="size-3.5" />}
+              {v === "channels" ? "Salons" : "Privé"}
+              <UnreadBadge count={v === "channels" ? channelUnread : dmUnread} muted={false} />
+            </button>
+          ))}
+        </div>
+        {view === "channels" && me.isAdmin && <CreateChannel store={store} />}
+      </div>
+
+      <nav className="flex-1 overflow-y-auto p-2">
+        {view === "channels" ? (
+          <>
+            {state.channels.map((c) => (
+              <div key={c.id} className="group/channel relative">
                 <button
-                  key={d.id}
                   type="button"
-                  onClick={() => setSelectedDm(d.id)}
+                  onClick={() => {
+                    setSelectedChannel(c.id)
+                    setDrawer(null)
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault()
-                    setMenu({ kind: "person", userId: d.otherId, x: e.clientX, y: e.clientY })
+                    setMenu({ kind: "channel", channelId: c.id, x: e.clientX, y: e.clientY })
                   }}
                   className={cn(
-                    "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
-                    d.id === dm?.id && "bg-muted font-medium text-foreground",
+                    "flex w-full items-center gap-1.5 rounded-md py-1.5 pr-8 pl-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                    c.id === channel?.id && "bg-muted font-medium text-foreground",
                   )}
                 >
-                  <PresenceAvatar userId={d.otherId} state={state} store={store} className="size-8" />
+                  <Hash className="size-4 shrink-0" />
                   <span
                     className={cn(
                       "truncate",
-                      (state.unread[d.id]?.count ?? 0) > 0 && !store.isMuted(d.id) && "font-semibold text-foreground",
+                      (state.unread[c.id]?.count ?? 0) > 0 && !store.isMuted(c.id) && "font-semibold text-foreground",
                     )}
                   >
-                    {pseudoOf(d.otherId)}
+                    {c.name}
                   </span>
-                  {store.isMuted(d.id) && <BellOff className="size-3.5 shrink-0 text-muted-foreground" />}
-                  {badge(d.id, "count")}
+                  {badge(c.id, "mentions")}
                 </button>
-              ))}
-              {dms.length === 0 && (
-                <p className="px-2 text-sm text-muted-foreground">
-                  Aucune conversation privée. Clique sur un membre à droite pour lui écrire.
-                </p>
-              )}
-            </>
-          )}
-        </nav>
+                {/* Story 63 : réglage du salon ; visible au survol, ou s'il n'est pas au défaut. */}
+                <button
+                  type="button"
+                  title="Notifications du salon"
+                  onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect()
+                    setMenu({ kind: "channel", channelId: c.id, x: r.right + 4, y: r.top })
+                  }}
+                  className={cn(
+                    "absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground",
+                    store.channelRule(c.id).level === "mentions" && !store.channelRule(c.id).silent
+                      ? "invisible group-hover/channel:visible"
+                      : "visible",
+                  )}
+                >
+                  {store.channelRule(c.id).level === "nothing" ? (
+                    <BellOff className="size-3.5" />
+                  ) : (
+                    <Bell className="size-3.5" />
+                  )}
+                </button>
+              </div>
+            ))}
+            {state.channels.length === 0 && state.voiceChannels.length === 0 && (
+              <p className="px-2 text-sm text-muted-foreground">
+                {me.isAdmin ? "Aucun salon : crée le premier avec +." : "Aucun salon pour l'instant."}
+              </p>
+            )}
+            <VoiceChannelList
+              state={state}
+              store={store}
+              onPersonMenu={(userId, x, y) => setMenu({ kind: "person", userId, x, y })}
+            />
+          </>
+        ) : (
+          <>
+            {dms.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => {
+                  setSelectedDm(d.id)
+                  setDrawer(null)
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setMenu({ kind: "person", userId: d.otherId, x: e.clientX, y: e.clientY })
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                  d.id === dm?.id && "bg-muted font-medium text-foreground",
+                )}
+              >
+                <PresenceAvatar userId={d.otherId} state={state} store={store} className="size-8" />
+                <span
+                  className={cn(
+                    "truncate",
+                    (state.unread[d.id]?.count ?? 0) > 0 && !store.isMuted(d.id) && "font-semibold text-foreground",
+                  )}
+                >
+                  {pseudoOf(d.otherId)}
+                </span>
+                {store.isMuted(d.id) && <BellOff className="size-3.5 shrink-0 text-muted-foreground" />}
+                {badge(d.id, "count")}
+              </button>
+            ))}
+            {dms.length === 0 && (
+              <p className="px-2 text-sm text-muted-foreground">
+                Aucune conversation privée. Clique sur un membre à droite pour lui écrire.
+              </p>
+            )}
+          </>
+        )}
+      </nav>
 
-        <VoiceBar state={state} store={store} />
-        <div className="flex items-center gap-1 border-t p-2">
-          <button
-            type="button"
-            onClick={() => setSettingsTab("profile")}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted"
-            title="Modifier le profil"
-          >
-            <PresenceAvatar userId={me.id} state={state} store={store} className="size-8" />
-            <span className="min-w-0 truncate text-sm font-medium">
-              {me.pseudo}
-              {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
-            </span>
-          </button>
-          <SelfVoiceButtons state={state} store={store} />
-          <Button variant="ghost" size="icon-sm" onClick={() => setSettingsTab("profile")} title="Paramètres">
-            <Settings />
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={store.logout} title="Se déconnecter">
-            <LogOut />
-          </Button>
-        </div>
-      </aside>
+      <VoiceBar state={state} store={store} />
+      <div className="flex items-center gap-1 border-t p-2">
+        <button
+          type="button"
+          onClick={() => setSettingsTab("profile")}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted"
+          title="Modifier le profil"
+        >
+          <PresenceAvatar userId={me.id} state={state} store={store} className="size-8" />
+          <span className="min-w-0 truncate text-sm font-medium">
+            {me.pseudo}
+            {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
+          </span>
+        </button>
+        <SelfVoiceButtons state={state} store={store} />
+        <Button variant="ghost" size="icon-sm" onClick={() => setSettingsTab("profile")} title="Paramètres">
+          <Settings />
+        </Button>
+        <Button variant="ghost" size="icon-sm" onClick={store.logout} title="Se déconnecter">
+          <LogOut />
+        </Button>
+      </div>
+    </aside>
+  )
+  const members = (
+    <MembersPanel
+      state={state}
+      store={store}
+      onMessage={(id) => void messageUser(id)}
+      onEditProfile={() => setSettingsTab("profile")}
+    />
+  )
+
+  return (
+    <div className="flex h-dvh">
+      {wideNav ? sidebar : drawer === "nav" && <Drawer side="left" onClose={() => setDrawer(null)}>{sidebar}</Drawer>}
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-1.5 border-b px-4">
+        <header className="flex h-12 shrink-0 items-center gap-1.5 border-b px-4 max-md:pl-2">
+          {!wideNav && (
+            <Button variant="ghost" size="icon-sm" className="relative" onClick={() => setDrawer("nav")} title="Salons et conversations">
+              <Menu />
+              {channelUnread + dmUnread > 0 && (
+                <span className="absolute top-0.5 right-0.5 size-2 rounded-full bg-destructive" />
+              )}
+            </Button>
+          )}
           {view === "channels" && channel && (
             <>
-              <Hash className="size-4 text-muted-foreground" />
-              <span className="font-semibold">{channel.name}</span>
+              <Hash className="size-4 shrink-0 text-muted-foreground" />
+              <span className="truncate font-semibold">{channel.name}</span>
             </>
           )}
           {view === "dms" && dm && (
             <>
-              <AtSign className="size-4 text-muted-foreground" />
-              <span className="font-semibold">{pseudoOf(dm.otherId)}</span>
+              <AtSign className="size-4 shrink-0 text-muted-foreground" />
+              <span className="truncate font-semibold">{pseudoOf(dm.otherId)}</span>
             </>
           )}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             {state.phase === "offline" && <span className="text-sm text-muted-foreground">Reconnexion…</span>}
             <Button
-              variant={membersOpen ? "secondary" : "ghost"}
+              variant={wideMembers && membersOpen ? "secondary" : "ghost"}
               size="icon-sm"
-              className="hidden lg:inline-flex"
-              onClick={() => setMembersOpen((open) => !open)}
-              title={membersOpen ? "Masquer les membres" : "Afficher les membres"}
+              onClick={() => (wideMembers ? setMembersOpen((open) => !open) : setDrawer("members"))}
+              title={wideMembers && membersOpen ? "Masquer les membres" : "Afficher les membres"}
             >
               <Users />
             </Button>
@@ -310,16 +373,9 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
         )}
       </main>
 
-      {membersOpen && (
-        <div className="hidden lg:flex">
-          <MembersPanel
-            state={state}
-            store={store}
-            onMessage={(id) => void messageUser(id)}
-            onEditProfile={() => setSettingsTab("profile")}
-          />
-        </div>
-      )}
+      {wideMembers
+        ? membersOpen && members
+        : drawer === "members" && <Drawer side="right" onClose={() => setDrawer(null)}>{members}</Drawer>}
 
       {settingsTab && (
         <SettingsPanel state={state} store={store} initialTab={settingsTab} onClose={() => setSettingsTab(null)} />

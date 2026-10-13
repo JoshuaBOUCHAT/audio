@@ -182,7 +182,7 @@ export function ChannelFeed({
                 key={m.id}
                 id={`message-${m.id}`}
                 className={cn(
-                  "group relative py-0.5 pr-24 pl-16 hover:bg-muted/50",
+                  "group relative py-0.5 pr-4 pl-16 hover:bg-muted/50 sm:pr-24",
                   !grouped && "mt-3",
                   mentionsMe && "bg-amber-400/10 shadow-[inset_2px_0_0_var(--color-amber-500)] hover:bg-amber-400/15",
                   targeted && "bg-primary/5 shadow-[inset_2px_0_0_var(--primary)]",

@@ -41,15 +41,15 @@ export function SettingsPanel({
 
   return (
     <div
-      className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 sm:p-4"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal
       aria-label="Paramètres"
     >
-      <div className="flex h-[min(42rem,100%)] w-full max-w-3xl overflow-hidden rounded-xl border bg-background shadow-xl">
-        <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r bg-muted/40 p-2">
-          <span className="px-2 pt-1 pb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+      <div className="flex h-full w-full max-w-3xl flex-col overflow-hidden bg-background shadow-xl sm:h-[min(42rem,100%)] sm:flex-row sm:rounded-xl sm:border">
+        <nav className="flex shrink-0 gap-0.5 overflow-x-auto border-b bg-muted/40 p-2 sm:w-48 sm:flex-col sm:border-r sm:border-b-0">
+          <span className="hidden px-2 pt-1 pb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:block">
             Paramètres
           </span>
           {TABS.filter((t) => t.id !== "admin" || state.me?.isAdmin).map(({ id, label, Icon }) => (
@@ -58,7 +58,7 @@ export function SettingsPanel({
               type="button"
               onClick={() => setTab(id)}
               className={cn(
-                "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                "flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm whitespace-nowrap text-muted-foreground hover:bg-muted hover:text-foreground",
                 tab === id && "bg-muted font-medium text-foreground",
               )}
             >
@@ -74,7 +74,7 @@ export function SettingsPanel({
               <X />
             </Button>
           </header>
-          <div className="flex-1 overflow-y-auto p-5">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5">
             {tab === "profile" && <ProfileSettings state={state} store={store} />}
             {tab === "appearance" && <AppearanceSettings state={state} store={store} />}
             {tab === "notifications" && <NotificationSettings state={state} store={store} />}

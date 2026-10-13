@@ -35,7 +35,7 @@ export function MembersPanel({
     setCard((open) => (open?.userId === userId ? null : { userId, anchor }))
 
   return (
-    <aside className="w-60 shrink-0 overflow-y-auto border-l bg-muted/40 p-2">
+    <aside className="h-full w-60 shrink-0 overflow-y-auto border-l bg-muted/40 p-2">
       <Group
         title="En ligne"
         members={online}
