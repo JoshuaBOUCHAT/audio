@@ -65,20 +65,6 @@ struct AppState {
     passwords: Rc<accounts::Passwords>,
 }
 
-const INDEX_HTML: &str = r#"<!doctype html>
-<html>
-<body>
-<script>
-// Protocole binaire (ClientEnvelope/ServerEnvelope protobuf), pas de console de
-// test texte ici — voir front/ pour le client protobuf.
-const ws = new WebSocket(`wss://${location.host}/`);
-ws.onopen = () => console.log('[ws] open');
-ws.onclose = () => console.log('[ws] closed');
-</script>
-</body>
-</html>
-"#;
-
 #[monoio::main(timer_enabled = true)]
 async fn main() {
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter("certs/cert.pem")

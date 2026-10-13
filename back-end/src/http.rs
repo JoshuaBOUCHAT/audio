@@ -126,16 +126,16 @@ async fn read_head(tls: &mut TlsStream, buf: &mut Vec<u8>) -> Option<Head> {
 /// d'un envoi), la connexion doit alors être fermée.
 async fn route(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Vec<u8>) -> std::io::Result<bool> {
     match (head.method.as_str(), head.path.as_str()) {
-        ("GET", "/") => {
-            respond(tls, 200, "text/html", &[], crate::INDEX_HTML.as_bytes().to_vec()).await?;
-            Ok(true)
-        }
         ("POST", "/media") => upload(tls, state, head, buf).await,
         ("GET", path) if path.starts_with("/media/") => {
             let rest = &path["/media/".len()..];
             let (id, query) = rest.split_once('?').unwrap_or((rest, ""));
             let ticket = query.split('&').find_map(|kv| kv.strip_prefix("ticket="));
             get_media(tls, state, head, id, ticket).await?;
+            Ok(true)
+        }
+        ("GET", path) if head.content_length.unwrap_or(0) == 0 => {
+            serve_front(tls, path).await?;
             Ok(true)
         }
         _ => {
@@ -146,6 +146,55 @@ async fn route(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Vec
             respond_error(tls, &error).await?;
             Ok(head.content_length.unwrap_or(0) == 0)
         }
+    }
+}
+
+/// Le client web (`front/dist`, produit par `npm run build`) inclus dans le binaire :
+/// un déploiement = un seul fichier à copier. En debug, rust-embed relit le dossier
+/// sur disque à chaque requête ; `allow_missing` : le back-end compile sans front
+/// construit (il répond alors 404).
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../front/dist/"]
+#[allow_missing = true]
+struct Front;
+
+/// Fichier du front, ou `index.html` pour une route du client (`/debug`…) : tout
+/// chemin sans extension. Les fichiers de `assets/` portent un hash de contenu dans
+/// leur nom (Vite), donc cachés indéfiniment ; `index.html` est revalidé à chaque fois
+/// pour qu'un déploiement soit vu au rechargement suivant.
+async fn serve_front(tls: &mut TlsStream, path: &str) -> std::io::Result<()> {
+    let path = path.split(['?', '#']).next().unwrap_or("").trim_start_matches('/');
+    let is_route = !path.rsplit('/').next().unwrap_or("").contains('.');
+    let name = if is_route { "index.html" } else { path };
+    let Some(file) = Front::get(name) else {
+        let error = proto::Error {
+            code: 404,
+            message: "introuvable".to_string(),
+        };
+        return respond_error(tls, &error).await;
+    };
+    let cache = if name.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let extra = [("Cache-Control", cache.to_string())];
+    respond(tls, 200, content_type(name), &extra, file.data.into_owned()).await
+}
+
+fn content_type(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "json" | "map" => "application/json",
+        "webmanifest" => "application/manifest+json",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        _ => "application/octet-stream",
     }
 }
 
