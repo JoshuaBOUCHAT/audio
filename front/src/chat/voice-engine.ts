@@ -2,10 +2,14 @@
 // détection de voix, connexion WebRTC, lecture des autres avec un volume par personne.
 //
 // Envoi : micro → gain (0-200 %, story 75) → détection de voix (AudioWorklet) → piste
-// envoyée. Sous le seuil pendant HANGOVER_MS, ou micro coupé, la piste est détachée de
-// la connexion (`replaceTrack(null)`) : plus aucun paquet (story 71). La détection
-// tourne dans le moteur audio et non sur un minuteur, que les navigateurs ralentissent
-// à une fois par seconde dans un onglet en arrière-plan.
+// envoyée. Sous le seuil pendant HANGOVER_MS, ou micro coupé, la détection laisse
+// passer du silence numérique (fondu de quelques ms) : avec `usedtx=1`, Opus n'envoie
+// plus qu'un paquet minuscule toutes les 400 ms (story 71). La piste reste attachée :
+// la détacher (`replaceTrack(null)`) gelait les horodatages RTP pendant le silence, et
+// le navigateur qui écoute, voyant chaque reprise de parole arriver « en retard » de
+// toute la durée du silence, gonflait sa mémoire tampon jusqu'à 1,4 s (mesuré sous
+// Firefox). La détection tourne dans le moteur audio et non sur un minuteur, que les
+// navigateurs ralentissent à une fois par seconde dans un onglet en arrière-plan.
 //
 // Réception : une piste par autre participant (`mid` → personne d'après le dernier
 // VoiceOffer), chacune → gain de la personne (story 76) → gain général (story 74) →
@@ -66,7 +70,8 @@ const SPEAKING_POLL_MS = 100
 
 // Niveau par trame de 20 ms (960 échantillons à 48 kHz, quelques blocs de 128) ; la
 // décision « parle / se tait » est prise ici, les messages ne partent qu'au changement
-// (et le niveau toutes les 100 ms, pour la jauge des Paramètres). Laisse passer le son.
+// (et le niveau toutes les 100 ms, pour la jauge des Paramètres). Laisse passer le son
+// quand on parle micro ouvert, sinon du silence, avec un fondu (~2 ms) contre les clics.
 const VAD_WORKLET = `
 class Vad extends AudioWorkletProcessor {
   constructor() {
@@ -77,13 +82,23 @@ class Vad extends AudioWorkletProcessor {
     this.lastVoice = -Infinity
     this.speaking = false
     this.lastLevel = 0
-    this.port.onmessage = (e) => { this.threshold = e.data.threshold }
+    this.muted = false
+    this.gain = 0
+    this.port.onmessage = (e) => {
+      if (e.data.threshold !== undefined) this.threshold = e.data.threshold
+      if (e.data.muted !== undefined) this.muted = e.data.muted
+    }
   }
   process(inputs, outputs) {
     const input = inputs[0][0]
+    const output = outputs[0][0]
+    const target = this.speaking && !this.muted ? 1 : 0
     if (input) {
-      outputs[0][0].set(input)
-      for (let i = 0; i < input.length; i++) this.sum += input[i] * input[i]
+      for (let i = 0; i < input.length; i++) {
+        this.sum += input[i] * input[i]
+        this.gain += (target - this.gain) * 0.01
+        output[i] = input[i] * this.gain
+      }
       this.count += input.length
     }
     if (this.count >= sampleRate / 50) {
@@ -129,10 +144,10 @@ export class VoiceEngine {
   private micSource: MediaStreamAudioSourceNode | null = null
   private micGain: GainNode | null = null
   private vad: AudioWorkletNode | null = null
-  private sendTrack: MediaStreamTrack | null = null
   private master: GainNode | null = null
   private pc: RTCPeerConnection | null = null
-  private sender: RTCRtpSender | null = null
+  /** Sortie de la détection de voix, envoyée telle quelle (silence compris). */
+  private sendTrack: MediaStreamTrack | null = null
   private readonly pipes = new Map<string, Pipe>()
   /** `mid` → personne, d'après le dernier VoiceOffer. */
   private mapping = new Map<string, number>()
@@ -159,7 +174,7 @@ export class VoiceEngine {
     await this.openMic()
     const pc = new RTCPeerConnection()
     this.pc = pc
-    this.sender = pc.addTransceiver("audio", { direction: "sendonly" }).sender
+    pc.addTransceiver(this.sendTrack!, { direction: "sendonly" })
     pc.ontrack = (e) => this.onTrack(e)
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") this.events.onConnected(true)
@@ -227,7 +242,6 @@ export class VoiceEngine {
     this.speakingTimer = null
     this.pc?.close()
     this.pc = null
-    this.sender = null
     for (const pipe of this.pipes.values()) pipe.element.srcObject = null
     this.pipes.clear()
     this.mic?.getTracks().forEach((t) => t.stop())
@@ -279,7 +293,7 @@ export class VoiceEngine {
       await this.applyOutputDevice()
     }
     this.micGain!.gain.value = this.prefs.micGain / 100
-    this.vad!.port.postMessage({ threshold: this.prefs.threshold })
+    this.vad!.port.postMessage({ threshold: this.prefs.threshold, muted: this.muted })
     this.master!.gain.value = this.deafened ? 0 : this.prefs.masterVolume / 100
     this.micSource?.disconnect()
     this.micSource = this.ctx.createMediaStreamSource(mic)
@@ -298,11 +312,10 @@ export class VoiceEngine {
     this.updateSending()
   }
 
-  /** Story 71 : la piste n'est attachée que si l'on parle et que le micro est ouvert. */
+  /** Story 71 : la voix ne part que si l'on parle micro ouvert (silence sinon). */
   private updateSending(): void {
-    const sending = this.voiceDetected && !this.muted
-    void this.sender?.replaceTrack(sending ? this.sendTrack : null)
-    this.events.onSpeaking("me", sending)
+    this.vad?.port.postMessage({ muted: this.muted })
+    this.events.onSpeaking("me", this.voiceDetected && !this.muted)
   }
 
   private onTrack(e: RTCTrackEvent): void {

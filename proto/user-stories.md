@@ -510,10 +510,14 @@ suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1
     de 20 ms, seuil réglable dans Paramètres, mémorisé localement), calculée dans un
     `AudioWorklet` et non par un minuteur — les navigateurs ralentissent les
     minuteurs d'un onglet en arrière-plan à une fois par seconde ; sous le seuil
-    pendant 400 ms, le micro est détaché de la connexion (`replaceTrack(null)`) :
-    plus aucun paquet audio. En plus, le serveur demande la transmission
-    discontinue d'Opus (`usedtx=1`). Reste un filet d'environ un paquet par seconde
-    (contrôles ICE, rapports RTCP) qui dit au serveur qu'on est toujours là.
+    pendant 400 ms, la détection laisse passer du silence numérique, et le serveur
+    demande la transmission discontinue d'Opus (`usedtx=1`) : un paquet minuscule
+    toutes les 400 ms au lieu de 50 par seconde. **Révision 2026-10-13** : au départ
+    le micro était détaché de la connexion (`replaceTrack(null)`, plus aucun paquet),
+    mais les horodatages RTP gelés pendant le silence faisaient gonfler la mémoire
+    tampon du navigateur qui écoute (1,4 s mesuré sous Firefox) : latence de 250 ms à
+    1 s. Reste en plus un filet de contrôles ICE et de rapports RTCP qui dit au
+    serveur qu'on est toujours là.
 72. En tant qu'utilisateur, je veux voir **qui parle** en ce moment.
     **Décisions** : calculé par chaque navigateur à partir du son reçu sur chaque
     piste — aucun message protocole.
