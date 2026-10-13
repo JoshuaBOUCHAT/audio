@@ -1,8 +1,9 @@
-// Paramètres › Voix (stories 71, 74, 75) : micro et sortie, gain du micro, sensibilité
-// de la détection de voix avec la jauge en direct, volume général, traitements du
-// navigateur. Tout est propre à l'appareil.
+// Paramètres › Voix (stories 71, 74, 75, 77, 78) : micro et sortie, gain du micro,
+// détection de voix (sensibilité, jauge en direct) ou push-to-talk, volume général,
+// sons d'arrivée / départ, traitements du navigateur. Tout est propre à l'appareil.
 
 import { useEffect, useState } from "react"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { ChatState, ChatStore } from "./store"
 import type { VoicePrefs } from "./voice-engine"
@@ -72,6 +73,29 @@ function DeviceSelect({
   )
 }
 
+/** Story 78 : la prochaine touche pressée devient celle du push-to-talk (Échap annule). */
+function KeyPicker({ label, onPick }: { label: string; onPick: (code: string, label: string) => void }) {
+  const [listening, setListening] = useState(false)
+  useEffect(() => {
+    if (!listening) return
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setListening(false)
+      if (e.key === "Escape") return
+      onPick(e.code, e.key === " " ? "Espace" : e.key.length === 1 ? e.key.toUpperCase() : e.key)
+    }
+    // Capture : passe avant le raccourci du push-to-talk et la fermeture par Échap.
+    window.addEventListener("keydown", onKey, true)
+    return () => window.removeEventListener("keydown", onKey, true)
+  }, [listening, onPick])
+  return (
+    <Button type="button" variant="outline" size="sm" onClick={() => setListening(true)} onBlur={() => setListening(false)}>
+      {listening ? "Appuie sur une touche…" : `Touche : ${label}`}
+    </Button>
+  )
+}
+
 export function VoiceSettings({ state, store }: { state: ChatState; store: ChatStore }) {
   const prefs = state.voicePrefs
   const update = (patch: Partial<VoicePrefs>) => store.setVoicePrefs({ ...prefs, ...patch })
@@ -127,7 +151,30 @@ export function VoiceSettings({ state, store }: { state: ChatState; store: ChatS
         onChange={(micGain) => update({ micGain })}
       />
 
-      <div className="flex flex-col gap-1 text-sm">
+      <div className="flex flex-col gap-2 text-sm">
+        Mode d'envoi
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={!prefs.pushToTalk} onChange={() => update({ pushToTalk: false })} />
+            Détection de voix
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={prefs.pushToTalk} onChange={() => update({ pushToTalk: true })} />
+            Push-to-talk
+          </label>
+          {prefs.pushToTalk && (
+            <KeyPicker label={prefs.pttLabel} onPick={(pttKey, pttLabel) => update({ pttKey, pttLabel })} />
+          )}
+        </div>
+        {prefs.pushToTalk && (
+          <p className="text-xs text-muted-foreground">
+            Ta voix part tant que la touche est enfoncée, quand l'onglet est au premier plan. Au doigt : le bouton
+            « Maintenir pour parler » du vocal.
+          </p>
+        )}
+      </div>
+
+      <div className={cn("flex flex-col gap-1 text-sm", prefs.pushToTalk && "hidden")}>
         <span className="flex justify-between">
           Sensibilité de la détection de voix
           <span className="text-muted-foreground tabular-nums">{prefs.threshold} dB</span>
@@ -177,6 +224,10 @@ export function VoiceSettings({ state, store }: { state: ChatState; store: ChatS
           onChange={(e) => update({ echoCancellation: e.target.checked })}
         />
         Annulation d'écho (utile sans casque)
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={prefs.voiceSounds} onChange={(e) => update({ voiceSounds: e.target.checked })} />
+        Son quand quelqu'un arrive dans le vocal ou en part
       </label>
     </div>
   )

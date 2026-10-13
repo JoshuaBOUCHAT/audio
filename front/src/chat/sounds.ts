@@ -41,6 +41,18 @@ export const SOUNDS: { id: string; label: string; notes: Note[] }[] = [
   },
 ]
 
+/** Story 77 : arrivée (montant) et départ (descendant) dans le vocal. */
+const VOICE_SOUNDS: Record<"join" | "leave", Note[]> = {
+  join: [
+    { freq: 587, wave: "sine", at: 0, dur: 0.12, gain: 0.2 },
+    { freq: 880, wave: "sine", at: 0.09, dur: 0.18, gain: 0.2 },
+  ],
+  leave: [
+    { freq: 880, wave: "sine", at: 0, dur: 0.12, gain: 0.2 },
+    { freq: 587, wave: "sine", at: 0.09, dur: 0.18, gain: 0.2 },
+  ],
+}
+
 let context: AudioContext | null = null
 
 /**
@@ -58,12 +70,19 @@ export function unlockAudioOnInteraction(): void {
 
 export function playSound(id: string): void {
   const sound = SOUNDS.find((s) => s.id === id)
-  if (!sound) return
+  if (sound) play(sound.notes)
+}
+
+export function playVoiceSound(kind: "join" | "leave"): void {
+  play(VOICE_SOUNDS[kind])
+}
+
+function play(notes: Note[]): void {
   context ??= new AudioContext()
   const ctx = context
   if (ctx.state === "suspended") void ctx.resume()
   const start = ctx.currentTime + 0.01
-  for (const note of sound.notes) {
+  for (const note of notes) {
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = note.wave

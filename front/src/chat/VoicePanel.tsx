@@ -1,5 +1,7 @@
 // Vocal dans la colonne de gauche : salons vocaux avec qui y est (stories 22, 72-73),
-// barre du vocal en cours (story 21), boutons micro coupé / sourdine (story 73).
+// barre du vocal en cours (story 21), boutons micro coupé / sourdine (story 73),
+// bouton « maintenir pour parler » (story 78). En fenêtre étroite, la même barre passe
+// sous l'en-tête du fil (`VoiceStrip`) pour ne pas devoir ouvrir le tiroir.
 
 import { Headphones, HeadphoneOff, Mic, MicOff, PhoneOff, Volume2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -75,21 +77,75 @@ export function VoiceChannelList({
   )
 }
 
+function VoiceStatus({ state }: { state: ChatState }) {
+  const name = state.voiceChannels.find((c) => c.id === state.voice?.channelId)?.name ?? ""
+  return (
+    <div className="min-w-0 flex-1">
+      <p className={cn("text-xs font-semibold", state.voice?.connected ? "text-emerald-600" : "text-muted-foreground")}>
+        {state.voice?.connected ? "Vocal connecté" : "Connexion au vocal…"}
+      </p>
+      <p className="truncate text-xs text-muted-foreground">{name}</p>
+    </div>
+  )
+}
+
+function LeaveButton({ store }: { store: ChatStore }) {
+  return (
+    <Button variant="ghost" size="icon-sm" onClick={() => void store.leaveVoice()} title="Quitter le vocal">
+      <PhoneOff />
+    </Button>
+  )
+}
+
+/** Story 78 : au doigt ou à la souris, parle tant qu'il est enfoncé. */
+function PushToTalkButton({ state, store }: { state: ChatState; store: ChatStore }) {
+  if (!state.voicePrefs.pushToTalk) return null
+  const talking = state.me ? state.speaking.has(state.me.id) : false
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId)
+        store.pushToTalk(true)
+      }}
+      onPointerUp={() => store.pushToTalk(false)}
+      onPointerCancel={() => store.pushToTalk(false)}
+      onContextMenu={(e) => e.preventDefault()}
+      className={cn(
+        "w-full touch-none rounded-md border py-2 text-sm font-medium select-none",
+        talking ? "border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400" : "bg-background",
+      )}
+    >
+      {talking ? "Tu parles…" : `Maintenir pour parler (${state.voicePrefs.pttLabel})`}
+    </button>
+  )
+}
+
 /** Vocal en cours : où, état de la connexion audio, quitter. */
 export function VoiceBar({ state, store }: { state: ChatState; store: ChatStore }) {
   if (!state.voice) return null
-  const name = state.voiceChannels.find((c) => c.id === state.voice?.channelId)?.name ?? ""
   return (
-    <div className="flex items-center gap-2 border-t px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <p className={cn("text-xs font-semibold", state.voice.connected ? "text-emerald-600" : "text-muted-foreground")}>
-          {state.voice.connected ? "Vocal connecté" : "Connexion au vocal…"}
-        </p>
-        <p className="truncate text-xs text-muted-foreground">{name}</p>
+    <div className="flex flex-col gap-2 border-t px-3 py-2">
+      <div className="flex items-center gap-2">
+        <VoiceStatus state={state} />
+        <LeaveButton store={store} />
       </div>
-      <Button variant="ghost" size="icon-sm" onClick={() => void store.leaveVoice()} title="Quitter le vocal">
-        <PhoneOff />
-      </Button>
+      <PushToTalkButton state={state} store={store} />
+    </div>
+  )
+}
+
+/** Fenêtre étroite : vocal en cours sous l'en-tête, micro et sourdine compris. */
+export function VoiceStrip({ state, store }: { state: ChatState; store: ChatStore }) {
+  if (!state.voice) return null
+  return (
+    <div className="flex shrink-0 flex-col gap-2 border-b bg-muted/40 px-3 py-1.5">
+      <div className="flex items-center gap-1">
+        <VoiceStatus state={state} />
+        <SelfVoiceButtons state={state} store={store} />
+        <LeaveButton store={store} />
+      </div>
+      <PushToTalkButton state={state} store={store} />
     </div>
   )
 }

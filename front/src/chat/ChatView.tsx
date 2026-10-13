@@ -16,7 +16,7 @@ import { byLastActivity } from "./model"
 import { ChannelMenu, PersonMenu } from "./NotifyMenus"
 import { SettingsPanel, type SettingsTab } from "./SettingsPanel"
 import type { ChatState, ChatStore } from "./store"
-import { SelfVoiceButtons, VoiceBar, VoiceChannelList } from "./VoicePanel"
+import { SelfVoiceButtons, VoiceBar, VoiceChannelList, VoiceStrip } from "./VoicePanel"
 
 type View = "channels" | "dms"
 
@@ -111,6 +111,35 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
+  }, [store])
+
+  // Story 78 : push-to-talk, touche maintenue (onglet actif). Hors vocal, la touche
+  // reste une touche normale.
+  useEffect(() => {
+    const isPtt = (e: KeyboardEvent) => {
+      const { voice, voicePrefs } = store.getSnapshot()
+      return voice !== null && voicePrefs.pushToTalk && e.code === voicePrefs.pttKey
+    }
+    const onDown = (e: KeyboardEvent) => {
+      if (!isPtt(e)) return
+      e.preventDefault()
+      if (!e.repeat) store.pushToTalk(true)
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (!isPtt(e)) return
+      e.preventDefault()
+      store.pushToTalk(false)
+    }
+    // Touche relâchée hors de l'onglet : jamais vue, on arrête de parler en le quittant.
+    const onBlur = () => store.pushToTalk(false)
+    document.addEventListener("keydown", onDown)
+    document.addEventListener("keyup", onUp)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      document.removeEventListener("keydown", onDown)
+      document.removeEventListener("keyup", onUp)
+      window.removeEventListener("blur", onBlur)
+    }
   }, [store])
 
   // Story 59 : cliquer une notification système ouvre sa conversation.
@@ -352,6 +381,8 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
             </Button>
           </div>
         </header>
+
+        {!wideNav && <VoiceStrip state={state} store={store} />}
 
         {state.error && (
           <div className="flex items-center justify-between border-b bg-destructive/10 px-4 py-1.5 text-sm text-destructive">

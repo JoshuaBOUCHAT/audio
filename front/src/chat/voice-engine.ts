@@ -2,7 +2,7 @@
 // détection de voix, connexion WebRTC, lecture des autres avec un volume par personne.
 //
 // Envoi : micro → gain (0-200 %, story 75) → détection de voix (AudioWorklet) → piste
-// envoyée. Sous le seuil pendant HANGOVER_MS, ou micro coupé, la détection laisse
+// envoyée. En push-to-talk (story 78), la touche remplace la détection. Sous le seuil pendant HANGOVER_MS, ou micro coupé, la détection laisse
 // passer du silence numérique (fondu de quelques ms) : avec `usedtx=1`, Opus n'envoie
 // plus qu'un paquet minuscule toutes les 400 ms (story 71). La piste reste attachée :
 // la détacher (`replaceTrack(null)`) gelait les horodatages RTP pendant le silence, et
@@ -22,7 +22,7 @@
 // répondre aux offres du serveur. Les opérations SDP sont mises en file : une offre du
 // serveur peut arriver avant que la réponse à la nôtre soit appliquée.
 
-/** Réglages de l'appareil (stories 71, 74, 75), mémorisés localement. */
+/** Réglages de l'appareil (stories 71, 74, 75, 77, 78), mémorisés localement. */
 export type VoicePrefs = {
   inputDevice: string // "" = défaut
   outputDevice: string
@@ -31,6 +31,10 @@ export type VoicePrefs = {
   masterVolume: number // %, 0-100
   noiseSuppression: boolean
   echoCancellation: boolean
+  voiceSounds: boolean
+  pushToTalk: boolean
+  pttKey: string // KeyboardEvent.code
+  pttLabel: string // la touche telle qu'affichée au moment du choix
 }
 
 export const DEFAULT_VOICE_PREFS: VoicePrefs = {
@@ -41,6 +45,10 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   masterVolume: 100,
   noiseSuppression: true,
   echoCancellation: true,
+  voiceSounds: true,
+  pushToTalk: false,
+  pttKey: "Backquote",
+  pttLabel: "²",
 }
 
 /**
@@ -76,7 +84,8 @@ const loudness = (percent: number) => (percent / 100) ** 2
 // Niveau par trame de 20 ms (960 échantillons à 48 kHz, quelques blocs de 128) ; la
 // décision « parle / se tait » est prise ici, les messages ne partent qu'au changement
 // (et le niveau toutes les 100 ms, pour la jauge des Paramètres). Laisse passer le son
-// quand on parle micro ouvert, sinon du silence, avec un fondu (~2 ms) contre les clics.
+// quand on parle micro ouvert (en push-to-talk : touche maintenue), sinon du silence,
+// avec un fondu (~2 ms) contre les clics.
 const VAD_WORKLET = `
 class Vad extends AudioWorkletProcessor {
   constructor() {
@@ -88,16 +97,20 @@ class Vad extends AudioWorkletProcessor {
     this.speaking = false
     this.lastLevel = 0
     this.muted = false
+    this.ptt = false
+    this.held = false
     this.gain = 0
     this.port.onmessage = (e) => {
       if (e.data.threshold !== undefined) this.threshold = e.data.threshold
       if (e.data.muted !== undefined) this.muted = e.data.muted
+      if (e.data.ptt !== undefined) this.ptt = e.data.ptt
+      if (e.data.held !== undefined) this.held = e.data.held
     }
   }
   process(inputs, outputs) {
     const input = inputs[0][0]
     const output = outputs[0][0]
-    const target = this.speaking && !this.muted ? 1 : 0
+    const target = (this.ptt ? this.held : this.speaking) && !this.muted ? 1 : 0
     if (input) {
       for (let i = 0; i < input.length; i++) {
         this.sum += input[i] * input[i]
@@ -161,6 +174,7 @@ export class VoiceEngine {
   private speakingTimer: ReturnType<typeof setInterval> | null = null
   private readonly othersSpeaking = new Set<number>()
   private voiceDetected = false
+  private pttHeld = false
   private muted = false
   private deafened = false
   private prefs: VoicePrefs
@@ -223,6 +237,12 @@ export class VoiceEngine {
     if (this.master) this.master.gain.value = deafened ? 0 : loudness(this.prefs.masterVolume)
   }
 
+  /** Story 78 : touche du push-to-talk enfoncée ou relâchée. */
+  setPttHeld(held: boolean): void {
+    this.pttHeld = held
+    this.updateSending()
+  }
+
   setVolumes(volumes: Record<number, number>): void {
     this.volumes = volumes
     for (const mid of this.pipes.keys()) this.applyVolume(mid)
@@ -236,7 +256,8 @@ export class VoiceEngine {
       prefs.echoCancellation !== this.prefs.echoCancellation
     this.prefs = prefs
     if (this.micGain) this.micGain.gain.value = prefs.micGain / 100
-    this.vad?.port.postMessage({ threshold: prefs.threshold })
+    this.vad?.port.postMessage({ threshold: prefs.threshold, ptt: prefs.pushToTalk })
+    this.updateSending()
     if (this.master) this.master.gain.value = this.deafened ? 0 : loudness(prefs.masterVolume)
     await this.applyOutputDevice()
     if (reopen && this.ctx) await this.openMic()
@@ -304,7 +325,7 @@ export class VoiceEngine {
       await this.applyOutputDevice()
     }
     this.micGain!.gain.value = this.prefs.micGain / 100
-    this.vad!.port.postMessage({ threshold: this.prefs.threshold, muted: this.muted })
+    this.vad!.port.postMessage({ threshold: this.prefs.threshold, muted: this.muted, ptt: this.prefs.pushToTalk })
     this.master!.gain.value = this.deafened ? 0 : loudness(this.prefs.masterVolume)
     this.micSource?.disconnect()
     this.micSource = this.ctx.createMediaStreamSource(mic)
@@ -323,10 +344,11 @@ export class VoiceEngine {
     this.updateSending()
   }
 
-  /** Story 71 : la voix ne part que si l'on parle micro ouvert (silence sinon). */
+  /** Stories 71, 78 : la voix ne part que si l'on parle (ou touche maintenue) micro ouvert. */
   private updateSending(): void {
-    this.vad?.port.postMessage({ muted: this.muted })
-    this.events.onSpeaking("me", this.voiceDetected && !this.muted)
+    this.vad?.port.postMessage({ muted: this.muted, held: this.pttHeld })
+    const talking = this.prefs.pushToTalk ? this.pttHeld : this.voiceDetected
+    this.events.onSpeaking("me", talking && !this.muted)
   }
 
   private onTrack(e: RTCTrackEvent): void {

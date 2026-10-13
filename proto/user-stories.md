@@ -547,6 +547,20 @@ suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1
     ferait planter la relecture des réglages existants en release. Clé dédiée
     `voice_volume:{moi}:{autre}` (un entier, 100 % = clé absente), `SetVoiceVolume`,
     état initial dans `AuthResponse`.
+77. En tant qu'utilisateur, je veux **entendre** quand quelqu'un arrive dans mon vocal
+    ou en part, et quand j'y entre ou en sors.
+    **Décisions** (2026-10-13) : sons synthétisés comme ceux des notifications
+    (story 57), joués par le navigateur à partir de `VoiceChanged` du salon où je
+    suis — aucun message protocole. Désactivables dans Paramètres › Voix (mémorisé
+    sur l'appareil).
+78. En tant qu'utilisateur, je veux pouvoir parler **seulement en maintenant une
+    touche** (push-to-talk), à la place de la détection de voix.
+    **Décisions** (2026-10-13) : réglage de l'appareil (Paramètres › Voix), touche au
+    choix (`²` par défaut : jamais tapée dans un message). Touche maintenue = la voix
+    part sans passer par le seuil de la story 71, relâchée = silence après 150 ms
+    (fin de mot). Raccourci actif seulement quand l'onglet a le focus (global avec
+    l'app Tauri) ; au doigt ou à la souris, un bouton « Maintenir pour parler » dans
+    la barre du vocal. Le micro coupé l'emporte.
 
 ---
 

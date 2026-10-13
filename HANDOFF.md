@@ -162,8 +162,10 @@ En ligne sur **https://audio.joshua-bouchat.fr** (mini-PC Intel N150, Ubuntu 24.
 
 1. **Retours d'usage du vocal** avec les amis (depuis l'extérieur, plusieurs
    personnes) : latence, coupures, détection de voix.
-2. **Petits manques du vocal**, proposés mais pas encore retenus : son d'arrivée /
-   départ, push-to-talk (raccourci global seulement avec Tauri).
+2. **Retours d'usage du mobile et du push-to-talk** (faits le 2026-10-13, stories
+   77-78 ; tiroirs salons / membres en fenêtre étroite, boutons des messages au
+   toucher, barre du vocal sous l'en-tête). Raccourci global du push-to-talk :
+   seulement avec Tauri.
 3. **Redondance RED** (trame précédente recopiée dans chaque paquet, sans latence
    ajoutée) si la FEC ne suffit pas : str0m ne connaît pas RED → passer le SFU en
    mode RTP brut, vérifier d'abord que str0m laisse passer un type de charge non
@@ -176,7 +178,7 @@ En ligne sur **https://audio.joshua-bouchat.fr** (mini-PC Intel N150, Ubuntu 24.
    P2P pour les appels à deux avec repli sur le SFU ; appels privés (le volume par
    personne, story 76, s'y appliquera).
 
-Ensuite / plus tard : mise en page mobile ; photos de profil par le chemin HTTP des
+Ensuite / plus tard : photos de profil par le chemin HTTP des
 médias (story 37) ; reprise de téléchargement par `Range` + checksum (story 53) ;
 envoi de très gros dossiers en flux ; nettoyage des médias orphelins (compteur de
 références, story 50) ; saves chiffrées côté oxidart ; AOF (durabilité entre deux

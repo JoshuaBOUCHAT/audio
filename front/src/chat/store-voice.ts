@@ -1,15 +1,19 @@
 // Vocal (stories 18, 21-22, 70-76) : rejoindre / quitter, négociation avec le serveur,
-// micro coupé et sourdine, volumes par personne, réglages de l'appareil. Le son lui-même
+// micro coupé et sourdine, volumes par personne, réglages de l'appareil, sons
+// d'arrivée / départ (story 77), push-to-talk (story 78). Le son lui-même
 // vit dans `VoiceEngine` ; ici, l'état affiché et le dialogue avec le serveur.
 
 import { createChannel, joinVoice, leaveVoice, setVoiceState, setVoiceVolume, voiceAnswer } from "@/lib/protocol"
 import { chat } from "@/proto/messages.js"
 import { isVoiceChannel, toChannel, toNumber, toVoiceMembers, type ChatChannel } from "./model"
+import { playVoiceSound } from "./sounds"
 import { ConversationsLayer } from "./store-conversations"
 import { DEFAULT_VOICE_PREFS, micLevelTest, VoiceEngine, type VoicePrefs } from "./voice-engine"
 
 const PREFS_KEY = "voice-prefs"
 const SELF_KEY = "voice-self"
+/** Story 78 : la voix part encore un instant après la touche relâchée (fin de mot). */
+const PTT_RELEASE_MS = 150
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -47,6 +51,7 @@ export abstract class VoiceLayer extends ConversationsLayer {
   private readonly levelListeners = new Set<(db: number) => void>()
   /** Test du micro des Paramètres, hors vocal. */
   private micTest: VoiceEngine | null = null
+  private pttRelease: ReturnType<typeof setTimeout> | null = null
 
   /** Story 70 (admin). */
   createVoiceChannel = async (name: string): Promise<boolean> => {
@@ -92,6 +97,7 @@ export abstract class VoiceLayer extends ConversationsLayer {
   leaveVoice = async (): Promise<void> => {
     this.rejoinChannel = null
     if (!this.state.voice) return
+    this.voiceSound("leave")
     this.stopEngine()
     this.set({ voice: null })
     await this.request(leaveVoice())
@@ -112,6 +118,14 @@ export abstract class VoiceLayer extends ConversationsLayer {
       this.mutedBeforeDeafen = muted
       this.applySelf({ muted: true, deafened: true })
     }
+  }
+
+  /** Story 78 : touche ou bouton « maintenir pour parler ». */
+  pushToTalk = (held: boolean): void => {
+    if (this.pttRelease) clearTimeout(this.pttRelease)
+    this.pttRelease = null
+    if (held) this.engine?.setPttHeld(true)
+    else this.pttRelease = setTimeout(() => this.engine?.setPttHeld(false), PTT_RELEASE_MS)
   }
 
   /** Story 76 : appliqué tout de suite, puis gardé dans le compte. */
@@ -180,7 +194,13 @@ export abstract class VoiceLayer extends ConversationsLayer {
     this.set({ speaking: next })
   }
 
+  private voiceSound(kind: "join" | "leave"): void {
+    if (this.state.voicePrefs.voiceSounds) playVoiceSound(kind)
+  }
+
   protected stopEngine(): void {
+    if (this.pttRelease) clearTimeout(this.pttRelease)
+    this.pttRelease = null
     this.engine?.stop()
     this.engine = null
     if (this.state.speaking.size > 0) this.set({ speaking: new Set() })
@@ -204,12 +224,22 @@ export abstract class VoiceLayer extends ConversationsLayer {
   }
 
   protected onVoiceChanged(changed: chat.IVoiceChanged): void {
-    this.set({ voiceMembers: { ...this.state.voiceMembers, [toNumber(changed.channelId)]: toVoiceMembers(changed) } })
+    const channelId = toNumber(changed.channelId)
+    const members = toVoiceMembers(changed)
+    // Story 77 : arrivée (moi compris) ou départ dans le vocal où je suis.
+    if (this.state.voice?.channelId === channelId) {
+      const before = new Set((this.state.voiceMembers[channelId] ?? []).map((m) => m.userId))
+      const after = new Set(members.map((m) => m.userId))
+      if ([...after].some((id) => !before.has(id))) this.voiceSound("join")
+      else if ([...before].some((id) => !after.has(id))) this.voiceSound("leave")
+    }
+    this.set({ voiceMembers: { ...this.state.voiceMembers, [channelId]: members } })
   }
 
   /** Sorti par le serveur : vocal rejoint depuis un autre appareil, ou audio perdu. */
   protected onVoiceLeft(): void {
     this.rejoinChannel = null
+    if (this.state.voice) this.voiceSound("leave")
     this.stopEngine()
     this.set({ voice: null })
   }

@@ -1,7 +1,8 @@
 // Fil d'un salon ou d'un DM (même interface, stories 30-31) : messages (stories 10-14, 36), réponse à un message avec saut vers
 // l'original (story 39), modification dans la barre de saisie (story 40), suppression
 // confirmée (story 38). Monté avec `key={conversationId}` : changer de conversation
-// remet à zéro le mode de saisie et le brouillon.
+// remet à zéro le mode de saisie et le brouillon. Sans survol (écran tactile), toucher
+// un message affiche ses boutons.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { CornerUpRight, FolderUp, Paperclip, Pencil, Reply, Trash2, X } from "lucide-react"
@@ -42,6 +43,7 @@ export function ChannelFeed({
   const [confirmDelete, setConfirmDelete] = useState<ChatMessage | null>(null)
   // `nonce` relance l'animation quand on reclique sur la même citation.
   const [flash, setFlash] = useState<{ id: number; nonce: number } | null>(null)
+  const [touched, setTouched] = useState<number | null>(null)
   const composer = useRef<ComposerHandle>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
@@ -181,11 +183,17 @@ export function ChannelFeed({
               <div
                 key={m.id}
                 id={`message-${m.id}`}
+                onClick={(e) => {
+                  if (m.deleted || !matchMedia("(hover: none)").matches) return
+                  if ((e.target as Element).closest("a, button, img, video, audio, input")) return
+                  setTouched((id) => (id === m.id ? null : m.id))
+                }}
                 className={cn(
                   "group relative py-0.5 pr-4 pl-16 hover:bg-muted/50 sm:pr-24",
                   !grouped && "mt-3",
                   mentionsMe && "bg-amber-400/10 shadow-[inset_2px_0_0_var(--color-amber-500)] hover:bg-amber-400/15",
                   targeted && "bg-primary/5 shadow-[inset_2px_0_0_var(--primary)]",
+                  touched === m.id && "bg-muted/50",
                 )}
               >
                 {flash?.id === m.id && (
@@ -222,7 +230,13 @@ export function ChannelFeed({
                   <MessageBody message={m} state={state} store={store} />
                 )}
                 {!m.deleted && (
-                  <div className="absolute -top-3 right-4 hidden rounded-md border bg-background shadow-sm group-hover:flex">
+                  <div
+                    onClick={() => setTouched(null)}
+                    className={cn(
+                      "absolute -top-3 right-4 hidden rounded-md border bg-background shadow-sm group-hover:flex",
+                      touched === m.id && "flex",
+                    )}
+                  >
                     <Button variant="ghost" size="icon-sm" onClick={() => startReply(m)} title="Répondre">
                       <Reply />
                     </Button>
