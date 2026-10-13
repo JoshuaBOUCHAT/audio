@@ -1,0 +1,31 @@
+# Service systemd du serveur audio. Installé par setup-server.sh dans
+# /etc/systemd/system/audio.service.
+[Unit]
+Description=audio (chat self-hosted)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=audio
+Group=audio
+# data/ (snapshot, médias, pepper) et certs/ sont relatifs à ce dossier.
+WorkingDirectory=/var/lib/audio
+EnvironmentFile=/etc/audio.env
+ExecStart=/usr/local/bin/audio
+Restart=always
+RestartSec=2
+# SIGTERM → save oxidart puis sortie (persist.rs) : laisser le temps de finir.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Port 443 sans être root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/audio
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
