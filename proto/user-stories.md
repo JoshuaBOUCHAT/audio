@@ -457,7 +457,7 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
 ### Vocal
 
 Remonté en v1 le 2026-10-13 (stories 18, 21, 22, jusque-là post-v1) ; 70-73 à la
-suite. La vidéo (19-20) reste post-v1. Spike de validation :
+suite (73-76 : volumes, micro coupé, sourdine). La vidéo (19-20) reste post-v1. Spike de validation :
 `back-end/examples/voice_echo.rs` (écho par le serveur, validé dans un navigateur).
 
 70. En tant qu'admin, je veux créer un **salon vocal** (en plus des salons texte),
@@ -507,7 +507,9 @@ suite. La vidéo (19-20) reste post-v1. Spike de validation :
 71. En tant qu'utilisateur, je veux que **rien ne soit envoyé quand je ne parle
     pas**, et pouvoir régler la sensibilité de la détection.
     **Décisions** : détection de voix dans le navigateur (niveau du micro par trame
-    de 20 ms, seuil réglable dans Paramètres, mémorisé localement) ; sous le seuil
+    de 20 ms, seuil réglable dans Paramètres, mémorisé localement), calculée dans un
+    `AudioWorklet` et non par un minuteur — les navigateurs ralentissent les
+    minuteurs d'un onglet en arrière-plan à une fois par seconde ; sous le seuil
     pendant 400 ms, le micro est détaché de la connexion (`replaceTrack(null)`) :
     plus aucun paquet audio. En plus, le serveur demande la transmission
     discontinue d'Opus (`usedtx=1`). Reste un filet d'environ un paquet par seconde
@@ -515,11 +517,26 @@ suite. La vidéo (19-20) reste post-v1. Spike de validation :
 72. En tant qu'utilisateur, je veux voir **qui parle** en ce moment.
     **Décisions** : calculé par chaque navigateur à partir du son reçu sur chaque
     piste — aucun message protocole.
-73. En tant qu'utilisateur, je veux **couper mon micro** et **couper le son** (ne
-    plus entendre).
-    **Décisions** : détails client, pas de message protocole : micro coupé = plus
-    rien n'est envoyé (comme le silence, story 71) ; son coupé = lecture coupée
-    localement. Que les autres voient « micro coupé » : plus tard si besoin.
+73. En tant qu'utilisateur, je veux **couper mon micro** et me **mettre en sourdine**
+    (ne plus rien entendre) facilement, et les enlever aussi facilement.
+    **Décisions** : deux boutons toujours visibles pendant un vocal, plus des
+    raccourcis clavier (onglet actif ; raccourcis globaux avec l'app Tauri). La
+    sourdine coupe aussi le micro ; l'enlever rend au micro l'état d'avant (coupé
+    avant la sourdine = reste coupé). Micro coupé = plus rien n'est envoyé (comme le
+    silence, story 71) ; sourdine = lecture coupée localement. Que les autres le
+    voient : à trancher (message de protocole).
+74. En tant qu'utilisateur, je veux régler le **volume général** des vocaux.
+    **Décisions** : appliqué dans le navigateur (0-100 %), mémorisé sur l'appareil.
+75. En tant qu'utilisateur, je veux régler le **gain de mon micro**, au-delà de 100 %
+    pour un micro faible.
+    **Décisions** : amplification (0-200 %) appliquée au micro **avant** l'envoi et
+    avant la détection de voix (story 71) — sinon un micro faible ne déclencherait
+    jamais l'envoi. Mémorisé sur l'appareil (dépend du matériel).
+76. En tant qu'utilisateur, je veux régler le **volume d'une personne** (0-200 %),
+    dans les vocaux comme plus tard dans les appels privés.
+    **Décisions** : appliqué par le navigateur de celui qui écoute, à la piste de
+    cette personne. Rangé dans le compte (synchronisé entre appareils, comme les
+    règles par personne de la story 63) — à confirmer.
 
 ---
 
