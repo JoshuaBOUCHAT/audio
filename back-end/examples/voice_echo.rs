@@ -10,6 +10,11 @@
 // au navigateur pour autoriser le micro). `SPIKE_IP` : adresse annoncée au navigateur
 // (défaut : l'IP locale de la machine — jamais 127.0.0.1, que les navigateurs
 // refusent pour WebRTC : ICE reste bloqué en Checking puis échoue),
+//
+// Silence : le serveur demande la transmission discontinue d'Opus (`usedtx=1` dans sa
+// réponse SDP) et la page coupe l'envoi quand la détection de voix ne voit plus rien
+// (micro détaché de la connexion, `replaceTrack(null)` : plus aucun paquet audio).
+//
 // `SPIKE_UDP` : port UDP (défaut 50000), `SPIKE_HTTP` : port de la page (défaut 3000).
 
 use std::cell::RefCell;
@@ -21,6 +26,8 @@ use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
 use monoio::net::udp::UdpSocket;
 use monoio::net::{TcpListener, TcpStream};
 use str0m::change::SdpOffer;
+use str0m::format::{Codec, FormatParams};
+use str0m::media::{Frequency, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 
@@ -29,6 +36,8 @@ struct Client {
     rtc: Rtc,
     received: u64,
     echoed: u64,
+    /// Valeurs au dernier rapport : débit sur les 2 dernières secondes.
+    reported: (u64, u64),
 }
 
 type Clients = Rc<RefCell<Vec<Client>>>;
@@ -97,8 +106,14 @@ async fn udp_loop(socket: Rc<UdpSocket>, clients: Clients, announced: SocketAddr
         }
         if last_report.elapsed() >= Duration::from_secs(2) {
             last_report = Instant::now();
-            for c in clients.borrow().iter() {
-                println!("[client {}] {} datagrammes reçus, {} paquets audio renvoyés", c.id, c.received, c.echoed);
+            for c in clients.borrow_mut().iter_mut() {
+                println!(
+                    "[client {}] 2 dernières s : {} datagrammes reçus, {} paquets audio renvoyés",
+                    c.id,
+                    c.received - c.reported.0,
+                    c.echoed - c.reported.1
+                );
+                c.reported = (c.received, c.echoed);
             }
         }
     }
@@ -191,7 +206,7 @@ async fn http(mut stream: TcpStream, clients: Clients, announced: SocketAddr, id
         match answer(&body, announced) {
             Ok(rtc) => {
                 let (rtc, sdp) = rtc;
-                clients.borrow_mut().push(Client { id, rtc, received: 0, echoed: 0 });
+                clients.borrow_mut().push(Client { id, rtc, received: 0, echoed: 0, reported: (0, 0) });
                 println!("[client {id}] offre acceptée");
                 ("200 OK", "application/sdp", sdp.into_bytes())
             }
@@ -212,7 +227,18 @@ fn answer(offer: &[u8], announced: SocketAddr) -> Result<(Rtc, String), String> 
     let candidates = sdp.lines().filter(|l| l.starts_with("a=candidate")).count();
     println!("[offre] {candidates} candidat(s) ICE du client dans le SDP");
     let offer = SdpOffer::from_sdp_string(sdp).map_err(|e| format!("{e:?}"))?;
-    let mut rtc = Rtc::builder().set_ice_lite(true).build(Instant::now());
+    // Opus seul, comme le réglage par défaut de str0m, plus `usedtx=1` : le navigateur
+    // n'envoie plus qu'un paquet toutes les 400 ms quand le son est du silence.
+    let mut config = Rtc::builder().set_ice_lite(true).clear_codecs();
+    config.codec_config().add_config(
+        Pt::from(111),
+        None,
+        Codec::Opus,
+        Frequency::FORTY_EIGHT_KHZ,
+        Some(2),
+        FormatParams { min_p_time: Some(10), use_inband_fec: Some(true), use_dtx: Some(true), ..Default::default() },
+    );
+    let mut rtc = config.build(Instant::now());
     let candidate = Candidate::host(announced, "udp").map_err(|e| format!("{e:?}"))?;
     rtc.add_local_candidate(candidate);
     let answer = rtc.sdp_api().accept_offer(offer).map_err(|e| format!("{e:?}"))?;
@@ -226,15 +252,49 @@ const PAGE: &str = r#"<!doctype html>
 <h1>Écho vocal</h1>
 <p>Parle : tu dois t'entendre avec un léger retard (aller-retour par le serveur).</p>
 <button id="go">Démarrer</button>
+<label>Sensibilité <input id="threshold" type="range" min="-70" max="-20" value="-50"> <span id="db">-50</span> dB</label>
+<p id="vad">—</p>
 <pre id="out"></pre>
 <script>
 const out = document.getElementById("out")
-window.spike = { ice: "new", candidatesInOffer: -1, sent: 0, received: 0, level: 0 }
+window.spike = { ice: "new", candidatesInOffer: -1, sent: 0, received: 0, level: 0, speaking: false }
+const threshold = document.getElementById("threshold")
+threshold.oninput = () => { document.getElementById("db").textContent = threshold.value }
+/** Silence au-delà duquel on coupe : ne pas manger les fins de mots. */
+const HANGOVER_MS = 400
+
+// Détection de voix : niveau RMS du micro toutes les 20 ms (une trame Opus) ; au-dessus
+// du seuil, le micro est rattaché à la connexion, sinon détaché après HANGOVER_MS.
+function voiceGate(mic, sender) {
+  const ctx = new AudioContext()
+  const analyser = ctx.createAnalyser()
+  analyser.fftSize = 1024
+  ctx.createMediaStreamSource(mic).connect(analyser)
+  const samples = new Float32Array(analyser.fftSize)
+  const track = mic.getAudioTracks()[0]
+  let lastVoice = 0
+  setInterval(() => {
+    analyser.getFloatTimeDomainData(samples)
+    let sum = 0
+    for (const v of samples) sum += v * v
+    const db = 10 * Math.log10(sum / samples.length + 1e-12)
+    const now = performance.now()
+    if (db > Number(threshold.value)) lastVoice = now
+    const speaking = now - lastVoice < HANGOVER_MS
+    if (speaking !== spike.speaking) {
+      spike.speaking = speaking
+      void sender.replaceTrack(speaking ? track : null)
+    }
+    document.getElementById("vad").textContent = `${db.toFixed(0)} dB — ${speaking ? "🎙️ envoi" : "🔇 silence, rien n'est envoyé"}`
+  }, 20)
+}
 async function start() {
   document.getElementById("go").disabled = true
   const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false } })
   const pc = new RTCPeerConnection()
-  pc.addTransceiver(mic.getAudioTracks()[0], { direction: "sendrecv" })
+  // Transceiver créé sans piste : l'envoi ne démarre qu'à la première voix détectée.
+  const { sender } = pc.addTransceiver("audio", { direction: "sendrecv" })
+  voiceGate(mic, sender)
   pc.ontrack = (e) => { const a = new Audio(); a.srcObject = new MediaStream([e.track]); a.play() }
   pc.oniceconnectionstatechange = () => { spike.ice = pc.iceConnectionState }
   const offer = await pc.createOffer()
