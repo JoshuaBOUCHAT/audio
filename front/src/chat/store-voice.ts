@@ -123,6 +123,11 @@ export abstract class VoiceLayer extends ConversationsLayer {
     await this.request(setVoiceVolume(userId, volume))
   }
 
+  /** Curseur en cours de glissement : entendu tout de suite, rien d'envoyé. */
+  previewVoiceVolume = (userId: number, volume: number): void => {
+    this.engine?.setVolumes({ ...this.state.voiceVolumes, [userId]: volume })
+  }
+
   voiceVolume = (userId: number): number => this.state.voiceVolumes[userId] ?? 100
 
   /** Stories 71, 74, 75 : réglages de l'appareil, appliqués à chaud. */

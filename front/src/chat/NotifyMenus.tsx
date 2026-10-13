@@ -234,13 +234,30 @@ export function PersonMenu({
 
 /**
  * Story 76 : volume de la personne pour moi (0-200 %), dans les vocaux et plus tard
- * les appels privés. Envoyé et appliqué au relâchement du curseur.
+ * les appels privés. Entendu pendant le glissement, gardé dans le compte une fois le
+ * curseur immobile (ou le menu fermé) : attendre le relâchement ratait les cas où il
+ * n'est pas vu (pointeur lâché hors du curseur, tactile).
  */
 function VoiceVolume({ userId, state, store }: { userId: number; state: ChatState; store: ChatStore }) {
   const saved = state.voiceVolumes[userId] ?? 100
   const [value, setValue] = useState(saved)
   useEffect(() => setValue(saved), [saved])
-  const commit = () => value !== saved && void store.setVoiceVolume(userId, value)
+  const pending = useRef<{ value: number; timer: ReturnType<typeof setTimeout> } | null>(null)
+  const commit = () => {
+    if (!pending.current) return
+    clearTimeout(pending.current.timer)
+    void store.setVoiceVolume(userId, pending.current.value)
+    pending.current = null
+  }
+  const commitRef = useRef(commit)
+  commitRef.current = commit
+  useEffect(() => () => commitRef.current(), [])
+  const change = (volume: number) => {
+    setValue(volume)
+    store.previewVoiceVolume(userId, volume)
+    if (pending.current) clearTimeout(pending.current.timer)
+    pending.current = { value: volume, timer: setTimeout(() => commitRef.current(), 400) }
+  }
   return (
     <label className="flex flex-col gap-1 border-t px-2 pt-2 pb-1 text-sm">
       <span className="flex justify-between">
@@ -253,9 +270,7 @@ function VoiceVolume({ userId, state, store }: { userId: number; state: ChatStat
         max={200}
         step={5}
         value={value}
-        onChange={(e) => setValue(Number(e.target.value))}
-        onPointerUp={commit}
-        onKeyUp={commit}
+        onChange={(e) => change(Number(e.target.value))}
       />
     </label>
   )

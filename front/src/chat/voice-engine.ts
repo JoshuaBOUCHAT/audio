@@ -13,7 +13,9 @@
 //
 // Réception : une piste par autre participant (`mid` → personne d'après le dernier
 // VoiceOffer), chacune → gain de la personne (story 76) → gain général (story 74) →
-// sortie. Chrome ne fait passer le son d'une piste WebRTC dans Web Audio que si elle
+// limiteur → sortie. Les volumes en % suivent l'oreille (`loudness`) : linéaire, 50 %
+// ne s'entendait presque pas moins fort que 100 %. Le limiteur évite qu'une voix
+// poussée à 200 % sature. Chrome ne fait passer le son d'une piste WebRTC dans Web Audio que si elle
 // est aussi attachée à un élément <audio> (muet) : on le fait.
 //
 // Négociation (story 18) : une seule offre du navigateur (`start`), puis il ne fait que
@@ -67,6 +69,9 @@ const HANGOVER_MS = 400
 /** Niveau au-dessus duquel une personne reçue « parle » (story 72). */
 const SPEAKING_DB = -55
 const SPEAKING_POLL_MS = 100
+
+/** Volume d'écoute en % → gain : au carré, soit -12 dB à 50 % et +12 dB à 200 %. */
+const loudness = (percent: number) => (percent / 100) ** 2
 
 // Niveau par trame de 20 ms (960 échantillons à 48 kHz, quelques blocs de 128) ; la
 // décision « parle / se tait » est prise ici, les messages ne partent qu'au changement
@@ -215,7 +220,7 @@ export class VoiceEngine {
     this.muted = muted || deafened
     this.deafened = deafened
     this.updateSending()
-    if (this.master) this.master.gain.value = deafened ? 0 : this.prefs.masterVolume / 100
+    if (this.master) this.master.gain.value = deafened ? 0 : loudness(this.prefs.masterVolume)
   }
 
   setVolumes(volumes: Record<number, number>): void {
@@ -232,7 +237,7 @@ export class VoiceEngine {
     this.prefs = prefs
     if (this.micGain) this.micGain.gain.value = prefs.micGain / 100
     this.vad?.port.postMessage({ threshold: prefs.threshold })
-    if (this.master) this.master.gain.value = this.deafened ? 0 : prefs.masterVolume / 100
+    if (this.master) this.master.gain.value = this.deafened ? 0 : loudness(prefs.masterVolume)
     await this.applyOutputDevice()
     if (reopen && this.ctx) await this.openMic()
   }
@@ -289,12 +294,18 @@ export class VoiceEngine {
       this.micGain.connect(this.vad).connect(out)
       this.sendTrack = out.stream.getAudioTracks()[0]
       this.master = ctx.createGain()
-      this.master.connect(ctx.destination)
+      const limiter = ctx.createDynamicsCompressor()
+      limiter.threshold.value = -3
+      limiter.knee.value = 0
+      limiter.ratio.value = 20
+      limiter.attack.value = 0.002
+      limiter.release.value = 0.1
+      this.master.connect(limiter).connect(ctx.destination)
       await this.applyOutputDevice()
     }
     this.micGain!.gain.value = this.prefs.micGain / 100
     this.vad!.port.postMessage({ threshold: this.prefs.threshold, muted: this.muted })
-    this.master!.gain.value = this.deafened ? 0 : this.prefs.masterVolume / 100
+    this.master!.gain.value = this.deafened ? 0 : loudness(this.prefs.masterVolume)
     this.micSource?.disconnect()
     this.micSource = this.ctx.createMediaStreamSource(mic)
     this.micSource.connect(this.micGain!)
@@ -340,7 +351,7 @@ export class VoiceEngine {
     const pipe = this.pipes.get(mid)
     const user = this.mapping.get(mid)
     if (!pipe) return
-    pipe.gain.gain.value = user === undefined ? 0 : (this.volumes[user] ?? 100) / 100
+    pipe.gain.gain.value = user === undefined ? 0 : loudness(this.volumes[user] ?? 100)
   }
 
   /** Story 72 : niveau de chaque piste reçue, toutes les 100 ms. */
