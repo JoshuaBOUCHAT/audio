@@ -52,7 +52,7 @@ pub async fn serve(mut tls: TlsStream, state: AppState) {
             return;
         };
         if let Some(key) = &head.ws_key {
-            let accept = crate::compute_accept(key);
+            let accept = crate::connection::compute_accept(key);
             let response = format!(
                 "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
             );
@@ -60,7 +60,7 @@ pub async fn serve(mut tls: TlsStream, state: AppState) {
                 return;
             }
             println!("[ws] upgrade OK");
-            crate::handle_ws_connection(tls, state, buf).await;
+            crate::connection::handle_ws_connection(tls, state, buf).await;
             return;
         }
         let keep_alive = match route(&mut tls, &state, &head, &mut buf).await {
@@ -210,7 +210,7 @@ fn bearer_user(state: &AppState, head: &Head) -> Result<u64, proto::Error> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(|t| Uuid::parse_str(t.trim()).ok())
         .ok_or_else(unauthorized)?;
-    crate::session_user(&mut state.art.borrow_mut(), token).ok_or_else(unauthorized)
+    crate::auth::session_user(&mut state.art.borrow_mut(), token).ok_or_else(unauthorized)
 }
 
 /// Stories 27, 47-48, 51 : corps écrit au fil de l'eau dans un fichier temporaire
@@ -232,7 +232,7 @@ async fn upload(tls: &mut TlsStream, state: &AppState, head: &Head, buf: &mut Ve
             });
         }
         let mut art = state.art.borrow_mut();
-        crate::require_pseudo(&mut art, user_id)?;
+        crate::users::require_pseudo(&mut art, user_id)?;
         media::check_quota(&mut art, config, user_id, len)?;
         Ok((user_id, len))
     })();

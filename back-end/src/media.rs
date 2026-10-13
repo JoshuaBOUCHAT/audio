@@ -20,7 +20,8 @@ use oxidart::{OxidArt, Value};
 use radixox_lib::shared_byte::SharedByte;
 use serde::{Deserialize, Serialize};
 
-use crate::{keys, proto};
+use crate::dispatch::require_auth;
+use crate::{AppState, keys, proto};
 
 /// Story 47 : au-delà, une « bombe » de pixels ferait planter le navigateur des autres.
 pub const MAX_SIDE: u32 = 16_384;
@@ -362,6 +363,35 @@ pub fn not_found() -> proto::Error {
 /// chemin.
 pub fn is_media_id(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id)
+}
+
+/// Au plus autant d'ids par `GetMedia` : un salon affiche rarement plus de médias
+/// d'un coup, et la réponse reste petite.
+pub const MAX_MEDIA_PER_REQUEST: usize = 500;
+
+/// Story 51 : métadonnées (nom, taille, type, propriétaire) sans le contenu ; les ids
+/// inconnus, mal formés ou supprimés sont simplement absents de la réponse.
+pub fn get_media_info(
+    req: proto::GetMedia,
+    state: &AppState,
+    user_id: Option<u64>,
+) -> Result<proto::MediaInfo, proto::Error> {
+    require_auth(user_id)?;
+    if req.media_ids.len() > MAX_MEDIA_PER_REQUEST {
+        return Err(proto::Error {
+            code: 400,
+            message: format!("{MAX_MEDIA_PER_REQUEST} médias max par requête"),
+        });
+    }
+    let mut art = state.art.borrow_mut();
+    let media = req
+        .media_ids
+        .iter()
+        .filter(|id| is_media_id(id))
+        .filter_map(|id| load(&mut art, id))
+        .map(|stored| stored.meta)
+        .collect();
+    Ok(proto::MediaInfo { media })
 }
 
 #[cfg(test)]
