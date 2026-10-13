@@ -2,15 +2,16 @@
 
 Note de travail, pas de la doc durable : décrit où en est le projet et quoi faire
 ensuite. Décisions durables → `CLAUDE.md` / `architecture.md` / `proto/user-stories.md`
-(stories 1-69, chacune avec ses **Décisions**). Points repoussés → `TODO.md`.
+(stories 1-76, chacune avec ses **Décisions**). Points repoussés → `TODO.md`.
 
-## État au 2026-10-13 — texte, médias, présence, notifications, comptes : faits
+## État au 2026-10-13 — texte, médias, présence, notifications, comptes, vocal : faits, en ligne
 
-Tout est testé contre le vrai serveur (scripts de `tests-e2e/`), **mais rien n'a été
-vu dans un navigateur** pendant la session (pas d'outil navigateur) : rendu, barre de
-saisie riche, menus, lecteurs, thème sombre, défilement paginé sont vérifiés par la
-logique seulement. Les retours de l'utilisateur en usage réel ont déjà corrigé
-quelques points ; à relire visuellement en priorité.
+**En prod sur https://audio.joshua-bouchat.fr, vocal compris, validé par
+l'utilisateur** (Firefox, deux comptes, puis déployé et testé sur le serveur).
+
+Côté texte, tout est testé contre le vrai serveur (scripts de `tests-e2e/`) ; l'outil
+de session n'a pas de navigateur (le téléchargement du Chromium de Playwright a calé),
+ce sont les retours de l'utilisateur qui valident le rendu.
 
 ### Lancer
 
@@ -56,9 +57,11 @@ illimité), `AUDIO_PEPPER` (sinon `data/pepper`), et pour les tests
 | `connection.rs` | vie d'une connexion WS : lecture des trames, réponse, diffusion (`notify`) |
 | `dispatch.rs` | aiguillage des `ClientEnvelope`, contrôles d'accès (connecté, admin) |
 | `auth.rs` | portes d'entrée : session, mot de passe, invitation (vérifiée à l'ouverture), lien de dépannage, tokens de dev |
-| `users.rs` | profils : pseudo, statut, thème, description, photo |
+| `users.rs` | profils : pseudo, statut, thème, description, photo ; volume par personne (`voice_volume:{moi}:{autre}`) |
 | `channels.rs` | salons et DM |
 | `messages.rs` | envoi, modification, suppression, sync et pages d'historique |
+| `voice.rs` | vocal (SFU) : un `Rtc` str0m par participant, une tâche pour tout l'UDP (`accepts`), audio transmis tel quel, renégociation par le serveur, pistes recyclées, micro coupé / sourdine, IP publique par DNS du domaine vu dans `Host` |
+| `dns.rs` | requête DNS A minimale en UDP sur monoio (pas de `getaddrinfo` bloquant) |
 | `http.rs` | HTTP/1.1 sur le même port : requêtes accumulées, keep-alive, upgrade WS, `POST /media` (en flux), `GET /media/{id}` (Bearer ou ticket, `Range` → 206), front embarqué (`rust-embed` sur `front/dist`) |
 | `ws.rs` | frames WebSocket accumulées, plafond 1 Mio |
 | `registry.rs` | connexions : broadcast, envoi ciblé par utilisateur (DM), ping de toutes les connexions |
@@ -82,7 +85,9 @@ silence ; client : `Heartbeat` toutes les 20 s, reconnexion sans réponse sous 1
 | Fichier | Rôle |
 |---|---|
 | `store.ts` | `ChatStore` hors React, dernière couche : WS, reconnexion, heartbeat, auth, admin, broadcasts |
-| `store-core.ts` ← `store-media.ts` ← `store-profiles.ts` ← `store-notify.ts` ← `store-conversations.ts` | couches du store (une classe abstraite par fichier, chacune n'appelle que celles du dessous) : état et requête ; médias ; profils ; non-lus et notifications ; salons, DM, messages. Le vocal = une couche de plus |
+| `store-core.ts` ← `store-media.ts` ← `store-profiles.ts` ← `store-notify.ts` ← `store-conversations.ts` ← `store-voice.ts` | couches du store (une classe abstraite par fichier, chacune n'appelle que celles du dessous) : état et requête ; médias ; profils ; non-lus et notifications ; salons, DM, messages ; vocal |
+| `voice-engine.ts` | son du vocal hors React : micro → gain → détection de voix (AudioWorklet) → envoi ; pistes reçues → volume par personne → volume général ; SDP en file |
+| `VoicePanel.tsx`, `VoiceSettings.tsx` | salons vocaux (qui parle, micro coupé, sourdine), barre du vocal, boutons micro / sourdine (Ctrl+Alt+M / D), Paramètres › Voix |
 | `ChatView.tsx` | colonne Salons / Privé (badges, 🔔 par salon, clic droit), en-tête, membres, paramètres |
 | `ChannelFeed.tsx` | fil d'une conversation : pagination au scroll, réponse, modification, suppression confirmée, mentions surlignées |
 | `Composer.tsx` | saisie riche contenteditable : texte + médias + mentions (`@` autocomplétion), envoi d'images / fichiers / dossiers (ZIP) |
@@ -122,25 +127,54 @@ En ligne sur **https://audio.joshua-bouchat.fr** (mini-PC Intel N150, Ubuntu 24.
   `127.0.0.1:8443` ; certificat par certbot (webroot, renouvelé, nginx rechargé). Le
   binaire reste autonome ; l'UDP du vocal ne passera pas par nginx. ACME dans audio
   n'est donc plus nécessaire ici.
-- Logs : `journalctl -u audio` (liens d'invitation du bootstrap).
+- Logs : `journalctl -u audio` (liens d'invitation du bootstrap, `[voice] …`).
+- **Vocal** : 443/udp, à côté du 443/tcp de nginx (qui ne touche pas à l'UDP).
+  Fait une fois : redirection UDP 443 → 192.168.1.24 sur la box, `ufw allow 443/udp`
+  (désormais aussi dans `setup-server.sh`). Rien dans `/etc/audio.env` : port 443 par
+  défaut en release, IP locale par la route par défaut (filaire `.24`), IP publique
+  par DNS du domaine vu dans l'en-tête `Host` (suivie si elle change).
+  `AUDIO_VOICE_LISTEN` / `AUDIO_PUBLIC_IP` restent possibles pour forcer.
+- Mise à jour : `deploy/deploy.sh`, rien d'autre. Lancer le serveur de dev **avec
+  l'email admin** (`cargo run -- moi@…`), sinon ni invitation admin ni bouton Admin
+  admin (le serveur le signale au démarrage).
 
-## Prochaines étapes (ordre recommandé, validé avec l'utilisateur)
+## Vocal — ce qui a été appris (2026-10-13)
 
-1. **Playwright** : vrais tests navigateur (login, message, image, DM ; plus tard
-   micro simulé) — remplacera `tests-e2e/`. Les scripts actuels ont vieilli :
-   `reads.mts` échoue sur les réglages (format de la story 63), et la moitié de
-   `store/*.mjs` ne simulent pas assez le navigateur (`window`, `AudioContext`)
-   pour charger le store.
-2. **Salons vocaux** (stories 18-22, protocole `WebRtcOffer` = 22 déjà là, numéros
-   40+ réservés pour JoinVoice / LeaveVoice / IceCandidate). Pistes discutées le
-   2026-10-13, à trancher dans les stories : emplacements audio pré-alloués dans
-   l'offre initiale (pas de renégociation quand quelqu'un arrive) ; ICE-lite sans
-   candidats client (le serveur apprend l'adresse du client par les requêtes STUN
-   reçues — à confirmer par un spike écho) ; un seul port UDP démultiplexé par
-   `Rtc::accepts` ; str0m avec `default-features = false, features = ["aws-lc-rs"]` ;
-   Opus 32-64 kbps. Port UDP à rediriger sur la box.
-3. **Vidéo / partage d'écran** ensuite : simulcast, relais PLI, codec commun ; P2P
-   pour les appels à deux avec repli sur le SFU.
+- **Pas de trickle ICE** : offre sans candidats, ICE-lite, le serveur apprend
+  l'adresse du navigateur par ses requêtes STUN (spike `examples/voice_echo.rs`).
+- **Jamais 127.0.0.1 comme candidat** : les navigateurs le refusent (ICE échoue).
+- **str0m ne recycle pas ses propres lignes SDP stoppées** (malgré le commentaire de
+  son exemple `chat.rs`) : pistes passées en `inactive` et réutilisées à la main.
+- **Latence** (250 ms-1 s, variable) : deux causes corrigées. (1) str0m retenait
+  jusqu'à 15 paquets (300 ms) après une perte → `set_reordering_size_audio(0)`, le
+  navigateur comble les trous. (2) Détacher le micro dans les silences
+  (`replaceTrack(null)`) gelait les horodatages RTP : la mémoire tampon de Firefox
+  montait à 1,4 s (`about:webrtc`, `jitterBufferTargetDelay`) → on envoie du silence
+  numérique, `usedtx=1` réduit à un paquet minuscule toutes les 400 ms.
+- **Opus à 64 kbps** : `maxaveragebitrate` ajouté par le navigateur à la description
+  du serveur (str0m ne sait pas l'annoncer). FEC intégrée négociée.
+- **Bincode strict** : ne jamais ajouter de champ à un type stocké (`Settings`…)
+  sans migration — la prod plante à la relecture. D'où `voice_volume:` à part.
+- Tests du SFU : navigateurs simulés par str0m, réseau en mémoire, horloge injectée
+  (`voice.rs`, `mod tests`) — plusieurs participants, recyclage, sourdine, perte.
+
+## Prochaines étapes (à revoir avec l'utilisateur à la reprise)
+
+1. **Retours d'usage du vocal** avec les amis (depuis l'extérieur, plusieurs
+   personnes) : latence, coupures, détection de voix.
+2. **Petits manques du vocal**, proposés mais pas encore retenus : son d'arrivée /
+   départ, push-to-talk (raccourci global seulement avec Tauri).
+3. **Redondance RED** (trame précédente recopiée dans chaque paquet, sans latence
+   ajoutée) si la FEC ne suffit pas : str0m ne connaît pas RED → passer le SFU en
+   mode RTP brut, vérifier d'abord que str0m laisse passer un type de charge non
+   négocié ; surtout utile sous Chrome (support Firefox incertain). Trames de 10 ms :
+   à tester.
+4. **Playwright** : vrais tests navigateur — remplacera `tests-e2e/`, qui ont vieilli
+   (`reads.mts` échoue sur le format de la story 63 ; la moitié de `store/*.mjs` ne
+   simulent pas assez le navigateur — `window`, `AudioContext`).
+5. **Vidéo / partage d'écran** (stories 19-20) : simulcast, relais PLI, codec commun ;
+   P2P pour les appels à deux avec repli sur le SFU ; appels privés (le volume par
+   personne, story 76, s'y appliquera).
 
 Ensuite / plus tard : mise en page mobile ; photos de profil par le chemin HTTP des
 médias (story 37) ; reprise de téléchargement par `Range` + checksum (story 53) ;

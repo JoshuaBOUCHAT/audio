@@ -32,10 +32,11 @@ audio/
 `back-end/`, `front/` et une future app Tauri consomment tous `proto/`. Ne jamais
 définir de types de message ailleurs que dans `proto/messages.proto`.
 
-État actuel (2026-10-12) : serveur et client web complets pour le texte (salons, DM,
+État actuel (2026-10-13) : serveur et client web complets pour le texte (salons, DM,
 réponses, modifications, mentions, pagination), les médias (images, vidéo, audio,
-fichiers, dossiers ZIP), la présence, les notifications et les comptes à mot de passe
-sur invitation ; vocal pas commencé. Point de reprise détaillé (lancer, structure,
+fichiers, dossiers ZIP), la présence, les notifications, les comptes à mot de passe
+sur invitation et **le vocal** (salons vocaux, SFU str0m sur 443/udp) ; en ligne sur
+https://audio.joshua-bouchat.fr (déploiement : `deploy/`, derrière le nginx du serveur). Point de reprise détaillé (lancer, structure,
 prochaines étapes) : `HANDOFF.md` ; points repoussés : `TODO.md` ; tests manuels de
 bout en bout : `tests-e2e/`.
 
@@ -141,11 +142,12 @@ de confiance, risque accepté, à traiter plus tard si besoin réel. **Exception
 flow d'auth lui-même doit rester strict (token long, usage unique, expirant) précisément
 parce que le reste du système ne l'est pas.
 
-## Scope v1 — texte uniquement
+## Scope v1 — texte et vocal
 
-Le vocal/vidéo (WebRTC/str0m) est une extension prévue mais **hors du périmètre
-d'implémentation immédiat**. V1 = salons texte + WebSocket + protocole de transport,
-conçu pour que le vocal s'ajoute sans refonte (cf. architecture.md pour le design cible).
+Le vocal est remonté en v1 le 2026-10-13 (stories 18, 21-22, 70-76 : SFU, une seule
+offre du navigateur puis renégociation par le serveur, pas de trickle ICE, 443/udp,
+détection de voix côté client). La vidéo (WebRTC/str0m) reste une extension prévue,
+hors du périmètre immédiat.
 
 Opérations messages v1 :
 - Envoyer / lister (SyncRequest avec `last_seen_id`)
@@ -182,7 +184,7 @@ snapshot avec le reste : snapshot et compteur sont toujours cohérents entre eux
 jour où un journal existe (cf. § Persistance), recaler le compteur au replay sur
 `max(ID déjà vu) + 1` plutôt que de faire confiance à la valeur du snapshot.
 
-## WebRTC — post-v1 (à garder en tête dès la conception du protocole)
+## WebRTC (vocal fait, vidéo à venir)
 
 Architecture **SFU**, pas P2P : chaque client se connecte uniquement au serveur (str0m
 forward les paquets, zéro décodage). Conséquence sur le NAT traversal : pas besoin de
