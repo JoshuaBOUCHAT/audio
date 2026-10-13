@@ -11,7 +11,9 @@ import {
   type MediaInfo,
   type NotifySettings,
   type Profile,
+  type VoiceMember,
 } from "./model"
+import { DEFAULT_VOICE_PREFS, type VoicePrefs } from "./voice-engine"
 
 export type Phase =
   | "connecting" // premier WS en cours d'ouverture
@@ -61,6 +63,20 @@ export type ChatState = {
   invite: string | null
   /** Story 66 : invitation vérifiée à l'ouverture ; `null` tant que la réponse n'est pas là. */
   inviteValid: boolean | null
+  /** Story 70 : salons vocaux (à part des salons texte). */
+  voiceChannels: ChatChannel[]
+  /** Stories 22, 73 : qui est dans chaque salon vocal, avec micro coupé / sourdine. */
+  voiceMembers: Record<number, VoiceMember[]>
+  /** Story 18 : mon vocal ; `connected` une fois l'audio établi. */
+  voice: { channelId: number; connected: boolean } | null
+  /** Story 73 : mon micro coupé / ma sourdine, gardés hors vocal et sur l'appareil. */
+  voiceSelf: { muted: boolean; deafened: boolean }
+  /** Story 72 : qui parle en ce moment (moi compris). */
+  speaking: ReadonlySet<number>
+  /** Story 76 : volume de chaque personne pour moi, en % (absent = 100). */
+  voiceVolumes: Record<number, number>
+  /** Stories 71, 74, 75 : réglages de l'appareil. */
+  voicePrefs: VoicePrefs
 }
 
 export const INITIAL: ChatState = {
@@ -80,6 +96,13 @@ export const INITIAL: ChatState = {
   error: null,
   invite: null,
   inviteValid: null,
+  voiceChannels: [],
+  voiceMembers: {},
+  voice: null,
+  voiceSelf: { muted: false, deafened: false },
+  speaking: new Set(),
+  voiceVolumes: {},
+  voicePrefs: DEFAULT_VOICE_PREFS,
 }
 
 /** Story 23 : vu par les autres. Pour soi, on suit son propre choix (story 41). */

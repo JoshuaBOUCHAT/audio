@@ -27,6 +27,7 @@ import { chat } from "@/proto/messages.js"
 import { mentions } from "./media"
 import {
   isTextChannel,
+  isVoiceChannel,
   toChannel,
   toConversation,
   toMe,
@@ -39,7 +40,7 @@ import {
   type Profile,
 } from "./model"
 import { clearSessionToken, loadSessionToken, saveSessionToken } from "./session"
-import { ConversationsLayer } from "./store-conversations"
+import { VoiceLayer, loadVoicePrefs, loadVoiceSelf } from "./store-voice"
 import { INITIAL, type ChatState } from "./store-core"
 
 // Types et utilitaires de l'état, importés par les composants depuis "./store".
@@ -50,7 +51,7 @@ const RECONNECT_MAX_MS = 10_000
 const HEARTBEAT_EVERY_MS = 20_000
 const HEARTBEAT_TIMEOUT_MS = 10_000
 
-export class ChatStore extends ConversationsLayer {
+export class ChatStore extends VoiceLayer {
   private socket: WebSocket | null = null
 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -67,7 +68,7 @@ export class ChatStore extends ConversationsLayer {
   constructor(magicToken: string | null, inviteToken: string | null = null) {
     super()
     this.pendingMagicToken = magicToken
-    this.state = { ...INITIAL, invite: inviteToken }
+    this.state = { ...INITIAL, invite: inviteToken, voicePrefs: loadVoicePrefs(), voiceSelf: loadVoiceSelf() }
   }
 
   // --- cycle de vie ---
@@ -116,6 +117,7 @@ export class ChatStore extends ConversationsLayer {
     this.socket = null
     this.client = null
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.voiceLost()
     if (this.disposed) return
     this.set({ phase: this.state.me ? "offline" : "connecting" })
     this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay)
@@ -303,6 +305,7 @@ export class ChatStore extends ConversationsLayer {
     })
     // Reconnexion : resync complète des salons encore ouverts.
     for (const id of Object.keys(kept).map(Number)) void this.sync(id)
+    this.voiceAuthenticated(auth)
   }
 
   logout = (): void => {
@@ -312,8 +315,11 @@ export class ChatStore extends ConversationsLayer {
       if (entry.status === "ready" && entry.url?.startsWith("blob:")) URL.revokeObjectURL(entry.url)
     }
     for (const { url } of Object.values(this.state.avatars)) URL.revokeObjectURL(url)
-    // La connexion reste authentifiée côté serveur : on repart d'un WS vierge.
-    this.state = INITIAL
+    this.rejoinChannel = null
+    this.stopEngine()
+    // La connexion reste authentifiée côté serveur : on repart d'un WS vierge (la
+    // fermeture vaut aussi départ du vocal). Les réglages de l'appareil restent.
+    this.state = { ...INITIAL, voicePrefs: this.state.voicePrefs, voiceSelf: this.state.voiceSelf }
     this.socket?.close()
   }
 
@@ -388,8 +394,21 @@ export class ChatStore extends ConversationsLayer {
       case "channelCreated": {
         const channel = envelope.channelCreated?.channel
         if (channel && isTextChannel(channel)) this.addChannel(toChannel(channel))
+        if (channel && isVoiceChannel(channel)) this.addVoiceChannel(toChannel(channel))
         break
       }
+      case "voiceOffer":
+        if (envelope.voiceOffer) void this.onVoiceOffer(envelope.voiceOffer)
+        break
+      case "voiceChanged":
+        if (envelope.voiceChanged) this.onVoiceChanged(envelope.voiceChanged)
+        break
+      case "voiceLeft":
+        this.onVoiceLeft()
+        break
+      case "voiceVolumeSet":
+        if (envelope.voiceVolumeSet) this.onVoiceVolumeSet(envelope.voiceVolumeSet)
+        break
     }
   }
 }

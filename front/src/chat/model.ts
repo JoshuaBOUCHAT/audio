@@ -96,6 +96,22 @@ export function isTextChannel(channel: chat.IChannel): boolean {
   return (channel.type ?? chat.Channel.Type.TEXT) === chat.Channel.Type.TEXT
 }
 
+/** Story 70. */
+export function isVoiceChannel(channel: chat.IChannel): boolean {
+  return channel.type === chat.Channel.Type.VOICE
+}
+
+/** Stories 22, 73 : une personne dans un salon vocal. */
+export type VoiceMember = { userId: number; muted: boolean; deafened: boolean }
+
+export function toVoiceMembers(changed: chat.IVoiceChanged): VoiceMember[] {
+  return (changed.members ?? []).map((m) => ({
+    userId: toNumber(m.userId),
+    muted: !!m.muted,
+    deafened: !!m.deafened,
+  }))
+}
+
 export function toChannel(channel: chat.IChannel): ChatChannel {
   return { id: toNumber(channel.id), name: channel.name ?? "" }
 }

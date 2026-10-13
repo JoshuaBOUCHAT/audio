@@ -25,8 +25,34 @@ export function authRequest(token: string): ClientEnvelopeShape {
   return { payload: "auth", auth: { token } };
 }
 
-export function createChannel(name: string): ClientEnvelopeShape {
-  return { payload: "createChannel", createChannel: { name } };
+/** Stories 7, 70 : salon texte ou vocal. */
+export function createChannel(name: string, type: chat.Channel.Type = chat.Channel.Type.TEXT): ClientEnvelopeShape {
+  return { payload: "createChannel", createChannel: { name, type } };
+}
+
+/** Story 18 : entrée dans un vocal avec l'offre SDP du navigateur (sans candidats). */
+export function joinVoice(channelId: number, sdp: string, muted: boolean, deafened: boolean): ClientEnvelopeShape {
+  return { payload: "joinVoice", joinVoice: { channelId, sdp, muted, deafened } };
+}
+
+/** Story 21. */
+export function leaveVoice(): ClientEnvelopeShape {
+  return { payload: "leaveVoice", leaveVoice: {} };
+}
+
+/** Story 18 : réponse à une offre du serveur. */
+export function voiceAnswer(offerId: number, sdp: string): ClientEnvelopeShape {
+  return { payload: "voiceAnswer", voiceAnswer: { offerId, sdp } };
+}
+
+/** Story 73 : micro coupé / sourdine, vus des autres. */
+export function setVoiceState(muted: boolean, deafened: boolean): ClientEnvelopeShape {
+  return { payload: "setVoiceState", setVoiceState: { muted, deafened } };
+}
+
+/** Story 76 : volume d'une personne pour moi, en %. */
+export function setVoiceVolume(userId: number, volume: number): ClientEnvelopeShape {
+  return { payload: "setVoiceVolume", setVoiceVolume: { userId, volume } };
 }
 
 /** `replyToId` : message cité (story 39), 0 = pas une réponse. */

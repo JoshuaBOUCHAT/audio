@@ -227,7 +227,37 @@ export function PersonMenu({
         </MenuItem>
       )}
       <PersonNotifyOptions userId={userId} state={state} store={store} />
+      <VoiceVolume userId={userId} state={state} store={store} />
     </ContextMenu>
+  )
+}
+
+/**
+ * Story 76 : volume de la personne pour moi (0-200 %), dans les vocaux et plus tard
+ * les appels privés. Envoyé et appliqué au relâchement du curseur.
+ */
+function VoiceVolume({ userId, state, store }: { userId: number; state: ChatState; store: ChatStore }) {
+  const saved = state.voiceVolumes[userId] ?? 100
+  const [value, setValue] = useState(saved)
+  useEffect(() => setValue(saved), [saved])
+  const commit = () => value !== saved && void store.setVoiceVolume(userId, value)
+  return (
+    <label className="flex flex-col gap-1 border-t px-2 pt-2 pb-1 text-sm">
+      <span className="flex justify-between">
+        Volume (vocal)
+        <span className="text-muted-foreground tabular-nums">{value} %</span>
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={200}
+        step={5}
+        value={value}
+        onChange={(e) => setValue(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+      />
+    </label>
   )
 }
 

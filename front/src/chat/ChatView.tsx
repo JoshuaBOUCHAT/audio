@@ -1,12 +1,12 @@
 // Vue principale : colonne de gauche qui bascule entre salons (création si admin,
-// story 7) et conversations privées (stories 28-30), fil de la conversation choisie
-// (`ChannelFeed`), membres à droite (story 23, carte de profil au clic, story 44).
+// stories 7, 70 ; salons vocaux en dessous, stories 18-22) et conversations privées
+// (stories 28-30), fil de la conversation choisie (`ChannelFeed`), membres à droite
+// (story 23, carte de profil au clic, story 44).
 
 import { useEffect, useState } from "react"
-import { AtSign, Bell, BellOff, Hash, LogOut, MessageCircle, Moon, Plus, Settings, Sun, Users } from "lucide-react"
+import { AtSign, Bell, BellOff, Hash, LogOut, MessageCircle, Plus, Settings, Users, Volume2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { resolvedTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import { PresenceAvatar } from "./Avatar"
 import { MembersPanel } from "./MembersPanel"
@@ -15,6 +15,7 @@ import { byLastActivity } from "./model"
 import { ChannelMenu, PersonMenu } from "./NotifyMenus"
 import { SettingsPanel, type SettingsTab } from "./SettingsPanel"
 import type { ChatState, ChatStore } from "./store"
+import { SelfVoiceButtons, VoiceBar, VoiceChannelList } from "./VoicePanel"
 
 type View = "channels" | "dms"
 
@@ -61,6 +62,19 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
     store.setActive(currentId ?? null)
   }, [currentId, store])
   useEffect(() => () => store.setActive(null), [store])
+
+  // Story 73 : raccourcis micro / sourdine (onglet actif).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.altKey) return
+      if (e.code === "KeyM") store.toggleMute()
+      else if (e.code === "KeyD") store.toggleDeafen()
+      else return
+      e.preventDefault()
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [store])
 
   // Story 59 : cliquer une notification système ouvre sa conversation.
   useEffect(() => {
@@ -175,11 +189,16 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
                   </button>
                 </div>
               ))}
-              {state.channels.length === 0 && (
+              {state.channels.length === 0 && state.voiceChannels.length === 0 && (
                 <p className="px-2 text-sm text-muted-foreground">
                   {me.isAdmin ? "Aucun salon : crée le premier avec +." : "Aucun salon pour l'instant."}
                 </p>
               )}
+              <VoiceChannelList
+                state={state}
+                store={store}
+                onPersonMenu={(userId, x, y) => setMenu({ kind: "person", userId, x, y })}
+              />
             </>
           ) : (
             <>
@@ -219,6 +238,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
           )}
         </nav>
 
+        <VoiceBar state={state} store={store} />
         <div className="flex items-center gap-1 border-t p-2">
           <button
             type="button"
@@ -232,14 +252,7 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
               {me.isAdmin && <span className="ml-1 text-xs font-normal text-muted-foreground">(admin)</span>}
             </span>
           </button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => void store.setTheme(resolvedTheme(me.theme) === "dark" ? "light" : "dark")}
-            title={resolvedTheme(me.theme) === "dark" ? "Passer en clair" : "Passer en sombre"}
-          >
-            {resolvedTheme(me.theme) === "dark" ? <Sun /> : <Moon />}
-          </Button>
+          <SelfVoiceButtons state={state} store={store} />
           <Button variant="ghost" size="icon-sm" onClick={() => setSettingsTab("profile")} title="Paramètres">
             <Settings />
           </Button>
@@ -334,6 +347,8 @@ export function ChatView({ state, store }: { state: ChatState; store: ChatStore 
 function CreateChannel({ store }: { store: ChatStore }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
+  // Story 70 : salon texte ou vocal.
+  const [voice, setVoice] = useState(false)
 
   if (!open) {
     return (
@@ -347,17 +362,27 @@ function CreateChannel({ store }: { store: ChatStore }) {
       className="absolute top-12 left-0 z-10 flex w-60 gap-1 border-b border-r bg-background p-2"
       onSubmit={async (e) => {
         e.preventDefault()
-        if (await store.createChannel(name)) {
+        if (await (voice ? store.createVoiceChannel(name) : store.createChannel(name))) {
           setName("")
           setOpen(false)
         }
       }}
     >
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="size-9 shrink-0"
+        onClick={() => setVoice((v) => !v)}
+        title={voice ? "Salon vocal (cliquer pour un salon texte)" : "Salon texte (cliquer pour un salon vocal)"}
+      >
+        {voice ? <Volume2 /> : <Hash />}
+      </Button>
       <Input
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
-        placeholder="nom du salon"
+        placeholder={voice ? "nom du salon vocal" : "nom du salon"}
         autoFocus
       />
       <Button type="submit" size="sm" className="h-9">
