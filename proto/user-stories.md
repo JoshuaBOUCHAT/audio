@@ -454,51 +454,86 @@ ailleurs — l'ordre des numéros ne reflète pas l'ordre d'apparition dans le d
     comme s'il n'existait pas. Piste pour le disque : snapshots chiffrés côté oxidart
     (clé fournie par variable d'environnement), sans chiffrement de bout en bout.
 
+### Vocal
+
+Remonté en v1 le 2026-10-13 (stories 18, 21, 22, jusque-là post-v1) ; 70-73 à la
+suite. La vidéo (19-20) reste post-v1. Spike de validation :
+`back-end/examples/voice_echo.rs` (écho par le serveur, validé dans un navigateur).
+
+70. En tant qu'admin, je veux créer un **salon vocal** (en plus des salons texte),
+    afin que les membres puissent s'y retrouver pour parler.
+    **Décisions** : même règle que la story 7 (admin seul) ; `CreateChannel` porte le
+    type (`TEXT` par défaut). Un salon vocal n'a pas de fil de messages.
+18. En tant qu'utilisateur, je veux rejoindre le vocal d'un salon pour parler avec
+    les membres présents. **Un seul vocal à la fois** : en rejoindre un second quitte
+    implicitement le premier.
+    **Décisions** :
+    - **SFU, pas P2P** : chaque navigateur ne parle qu'au serveur, qui fait suivre
+      les paquets Opus aux autres participants sans les décoder.
+    - **Une seule offre du navigateur**, envoyée avec `JoinVoice` (son micro). Le
+      serveur n'ajoute jamais de piste dans sa réponse : il envoie aussitôt après une
+      offre à lui (`VoiceOffer`) avec une piste de réception par participant déjà là.
+    - **Renégociation par le serveur seul**, à chaque arrivée ou départ : une offre
+      `VoiceOffer` (numérotée), le navigateur répond (`VoiceAnswer`). Jamais deux
+      offres en cours : un changement survenu pendant une négociation attend la
+      réponse, puis part dans l'offre suivante. Pas de limite arbitraire au nombre de
+      participants (choix de l'utilisateur, plutôt que des emplacements fixes).
+    - **Pistes réutilisées** : la piste d'un participant parti est recyclée pour le
+      prochain arrivant (le SDP ne grossit pas indéfiniment). Chaque offre dit quelle
+      piste (`mid`) porte la voix de qui.
+    - **Pas de trickle ICE** (validé par le spike) : l'offre part sans candidats ; le
+      serveur est en ICE-lite et apprend l'adresse du navigateur par ses requêtes
+      STUN. Pas de message `IceCandidate`.
+    - **Un seul port, 443/udp**, un seul socket pour tous (démultiplexé par
+      `Rtc::accepts`) : 443/udp est celui de HTTP/3, rarement bloqué. Candidats
+      annoncés : l'IP publique (`AUDIO_PUBLIC_IP`) et l'IP locale de la machine (amis
+      sur le même réseau que le serveur) — jamais 127.0.0.1, que les navigateurs
+      refusent.
+    - **État vocal en mémoire seulement**, pas dans OxidArt : un redémarrage du
+      serveur vide les vocaux ; les clients rejoignent d'eux-mêmes (story 21).
+    - Rejoindre le vocal se voit même en **invisible** (story 41) : on ne peut pas
+      parler aux autres en restant caché.
+21. En tant qu'utilisateur, je veux quitter le vocal à tout moment sans perdre ma
+    connexion au reste du chat.
+    **Décisions** : une coupure WebSocket vaut `LeaveVoice` (le `Rtc` est détruit,
+    pas de connexion vocale orpheline sans session pour la piloter) ; ICE perdu
+    aussi. Après une coupure, le client **rejoint de lui-même** le vocal où il était
+    une fois reconnecté (nouvelle offre).
+22. En tant qu'utilisateur, je veux voir qui est dans chaque salon vocal, avant de le
+    rejoindre comme pendant, mis à jour en temps réel.
+    **Décisions** (révision 2026-10-13) : diffusé **à tout le monde** (`VoiceChanged`,
+    comme la présence) et non plus aux seuls participants — sinon impossible de
+    savoir qui est là avant d'entrer. État initial dans `AuthResponse`.
+71. En tant qu'utilisateur, je veux que **rien ne soit envoyé quand je ne parle
+    pas**, et pouvoir régler la sensibilité de la détection.
+    **Décisions** : détection de voix dans le navigateur (niveau du micro par trame
+    de 20 ms, seuil réglable dans Paramètres, mémorisé localement) ; sous le seuil
+    pendant 400 ms, le micro est détaché de la connexion (`replaceTrack(null)`) :
+    plus aucun paquet audio. En plus, le serveur demande la transmission
+    discontinue d'Opus (`usedtx=1`). Reste un filet d'environ un paquet par seconde
+    (contrôles ICE, rapports RTCP) qui dit au serveur qu'on est toujours là.
+72. En tant qu'utilisateur, je veux voir **qui parle** en ce moment.
+    **Décisions** : calculé par chaque navigateur à partir du son reçu sur chaque
+    piste — aucun message protocole.
+73. En tant qu'utilisateur, je veux **couper mon micro** et **couper le son** (ne
+    plus entendre).
+    **Décisions** : détails client, pas de message protocole : micro coupé = plus
+    rien n'est envoyé (comme le silence, story 71) ; son coupé = lecture coupée
+    localement. Que les autres voient « micro coupé » : plus tard si besoin.
+
 ---
 
 ## Post-v1 — hors périmètre d'implémentation, mais utilisées pour ne pas fermer de porte dans le protocole
 
-### Vocal / Vidéo
+### Vidéo
 
-18. En tant qu'utilisateur, je veux rejoindre le canal vocal d'un salon pour parler
-    avec les membres présents. **Un seul canal vocal actif à la fois par utilisateur**
-    (pas de présence simultanée dans deux vocaux) — rejoindre un second vocal quitte
-    implicitement le premier, cohérent avec `voice_channel: Cell<Option<u64>>` (un seul
-    slot, pas une liste) déjà esquissé dans `architecture.md`.
+18, 21 et 22 sont remontées en v1 le 2026-10-13 (voir § Vocal de la partie V1).
+
 19. En tant qu'utilisateur, je veux activer ma caméra pour partager ma vidéo.
+    (Activer la caméra en cours de session passera par la même renégociation par le
+    serveur que les arrivées dans le vocal, story 18.)
 20. En tant qu'utilisateur à connexion limitée, je veux recevoir automatiquement une
     version basse résolution de la vidéo des autres, sans réglage manuel.
-21. En tant qu'utilisateur, je veux quitter le vocal à tout moment sans perdre ma
-    connexion au reste du chat. **Une coupure WebSocket est traitée comme un
-    `LeaveVoice` implicite** : pas de distinction entre départ explicite et
-    déconnexion — dans les deux cas le `Rtc` (str0m) du client est détruit et les
-    autres participants du même vocal sont notifiés. Évite un état "fantôme" (connexion
-    vocale orpheline sans session WS pour la piloter).
-22. En tant qu'utilisateur, je veux savoir qui est présent dans un canal vocal avant
-    de le rejoindre, et être notifié en temps réel des arrivées/départs pendant que je
-    suis dedans (arrivée/départ d'un participant = diffusion aux autres membres du même
-    vocal uniquement, pas un broadcast global comme pour story 11 — même logique de
-    routage ciblé que les DM, story 29).
-
-### Signaling — clarifications protocolaires (nécessaires avant messages.proto)
-
-- **Trickle ICE obligatoire** : les candidats ICE sont envoyés au fil de l'eau via des
-  messages `IceCandidate` séparés, jamais bundlés dans l'offer/answer SDP — c'est le
-  comportement natif de l'API WebRTC navigateur (`RTCPeerConnection.onicecandidate`),
-  pas une option à désactiver.
-- **Mute/unmute est un détail client, pas un message protocole** : couper son micro
-  correspond à arrêter d'envoyer des paquets RTP (ou désactiver la piste locale) côté
-  navigateur — le serveur n'a rien à modéliser côté état ("muted: bool" n'existe pas
-  dans `Client`), il continue de forward ce qui arrive, ou rien s'il n'arrive rien.
-  Un indicateur visuel "untel est mute" côté UI des autres clients se déduirait de
-  l'absence de paquets RTP entrants, pas d'un message dédié — hors scope tant que ce
-  n'est pas demandé explicitement.
-- **Renégociation non supportée en v1** : un seul `WebRtcOffer`/`WebRtcAnswer` par
-  session vocale (à l'entrée dans le canal). Activer la caméra en cours de session
-  (story 19) nécessiterait une renégociation SDP (`createOffer` avec `iceRestart` ou
-  une piste ajoutée après coup) — **non traité dans ce premier batch**, prévoir plutôt
-  que la caméra soit décidée avant l'offer initial (l'utilisateur active son micro/sa
-  caméra puis rejoint), quitte à revisiter si l'UX l'exige.
 
 ### Présence
 

@@ -54,7 +54,7 @@ message Channel {
 
   enum Type {
     TEXT = 0;
-    VOICE = 1; // réservé post-v1 (stories 18-22) — jamais émis en v1
+    VOICE = 1; // salon vocal (stories 70, 18) : pas de fil de messages
     DM = 2;    // conversation privée 1-à-1 (stories 28-32)
   }
   Type type = 3;
@@ -193,7 +193,7 @@ message ClientEnvelope {
     SetTheme          set_theme          = 18; // story 55
     MarkRead          mark_read          = 19; // story 56
     SetSettings       set_settings       = 20; // stories 57-60
-    WebRtcOffer       webrtc_offer       = 22; // story 18 — spike de validation, non-trickle
+    // 22 : ancien WebRtcOffer du spike, retiré (le vrai flux est JoinVoice).
 
     Heartbeat         heartbeat          = 29; // story 69
     PasswordLogin     password_login     = 30; // story 67
@@ -205,12 +205,11 @@ message ClientEnvelope {
     CreateLoginLink   create_login_link  = 36; // story 68 (admin)
     CheckInvite       check_invite       = 37; // story 66
 
-    // --- réservé post-v1, structure indicative seulement (numéros libres à partir
-    // de 40 ; 20, 21 et 23, d'abord envisagés ici, ont été pris entre-temps) ---
-    // JoinVoice    join_voice    = 40; // story 18
-    // LeaveVoice   leave_voice   = 41; // story 21
-    // IceCandidate ice_candidate = 42; // story 18
+    JoinVoice         join_voice         = 40; // story 18
+    LeaveVoice        leave_voice        = 41; // story 21
+    VoiceAnswer       voice_answer       = 42; // story 18
   }
+  reserved 22;
 }
 
 // Stories 1-2, remplacées par les stories 65-68 : refusé (403) — les liens ne sont
@@ -312,6 +311,7 @@ message SyncRequest {
 message CreateChannel {
   string name = 1;
   // Autorisation vérifiée côté serveur : admin uniquement.
+  Channel.Type type = 2; // story 70 : TEXT (défaut) ou VOICE ; DM refusé
 }
 
 // Réponse : UserUpdated (aussi diffusé aux autres). 409 si le pseudo est pris.
@@ -387,11 +387,22 @@ message GetAvatar {
   uint64 user_id = 1;
 }
 
-// Spike de validation WebRTC (story 18) : échange SDP non-trickle (candidats hôte
-// inclus directement dans le SDP, cf. user-stories.md § Signaling) — suffisant pour
-// valider str0m+monoio+UDP en local. Le vrai flow (trickle ICE obligatoire) est post-v1.
-message WebRtcOffer {
-  string sdp = 1;
+// Story 18 : entrer dans le vocal d'un salon VOICE, avec l'offre SDP du navigateur
+// (son micro, sans candidats ICE : pas de trickle). Quitte un autre vocal s'il y en a
+// un. Réponse : VoiceJoined, puis un VoiceOffer avec les participants déjà là.
+message JoinVoice {
+  uint64 channel_id = 1;
+  string sdp = 2;
+}
+
+// Story 21. Réponse : VoiceLeft. Une coupure WebSocket vaut LeaveVoice.
+message LeaveVoice {}
+
+// Story 18 : réponse SDP du navigateur à un VoiceOffer du serveur. Une réponse à une
+// offre dépassée (offer_id) est ignorée. Réponse : VoiceAnswered.
+message VoiceAnswer {
+  uint64 offer_id = 1;
+  string sdp = 2;
 }
 
 // ═══════════════════════════════════
@@ -427,6 +438,11 @@ message ServerEnvelope {
     InviteRevoked   invite_revoked    = 25;
     LoginLinkCreated login_link_created = 26;
     InviteChecked   invite_checked    = 27;
+    VoiceJoined     voice_joined      = 28; // story 18
+    VoiceOffer      voice_offer       = 29; // story 18, non sollicité
+    VoiceAnswered   voice_answered    = 30; // story 18
+    VoiceLeft       voice_left        = 31; // story 21
+    VoiceChanged    voice_changed     = 32; // story 22, broadcast
   }
 }
 
@@ -452,6 +468,8 @@ message AuthResponse {
   // Story 56 : non-lus de chaque conversation visible (salons et mes DM).
   repeated Unread unread = 7;
   Settings settings = 8; // stories 57-60
+  // Story 22 : qui est dans chaque salon vocal (salons vides absents).
+  repeated VoiceChanged voice = 9;
 }
 
 // Broadcast à tous les clients connectés, indépendamment du salon affiché
@@ -519,6 +537,37 @@ message InviteRevoked {
 
 message InviteChecked {
   uint64 expires_at = 1; // ms epoch
+}
+
+// Story 18 : réponse SDP du serveur à l'offre de JoinVoice.
+message VoiceJoined {
+  uint64 channel_id = 1;
+  string sdp = 2;
+}
+
+// Story 18 : piste de réception (`mid` du SDP) → qui parle dedans.
+message VoiceTrack {
+  string mid = 1;
+  uint64 user_id = 2;
+}
+
+// Story 18 : renégociation lancée par le serveur (arrivée ou départ). Une seule à la
+// fois ; le navigateur répond par VoiceAnswer avec le même offer_id. `tracks` : toutes
+// les pistes de réception actives après cette offre (une piste absente est libre).
+message VoiceOffer {
+  uint64 offer_id = 1;
+  string sdp = 2;
+  repeated VoiceTrack tracks = 3;
+}
+
+message VoiceAnswered {}
+
+message VoiceLeft {}
+
+// Story 22 : diffusé à tous à chaque arrivée ou départ ; `user_ids` vide = salon vide.
+message VoiceChanged {
+  uint64 channel_id = 1;
+  repeated uint64 user_ids = 2;
 }
 
 // Story 68 : lien `{origine}/?token={token}` (lien magique, usage unique).
