@@ -6,8 +6,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=audio
-Group=audio
+User=audiod
+Group=audiod
 # data/ (snapshot, médias, pepper) et certs/ sont relatifs à ce dossier.
 WorkingDirectory=/var/lib/audio
 EnvironmentFile=/etc/audio.env

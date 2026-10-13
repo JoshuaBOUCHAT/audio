@@ -6,8 +6,9 @@ set -euo pipefail
 
 admin_email="${1:?usage : setup-server.sh <email admin>}"
 
-id audio &>/dev/null || useradd --system --home-dir /var/lib/audio --shell /usr/sbin/nologin audio
-install -d -o audio -g audio -m 700 /var/lib/audio /var/lib/audio/certs
+# `audiod` et non `audio` : Ubuntu a déjà un groupe système `audio` (carte son).
+id audiod &>/dev/null || useradd --system --user-group --home-dir /var/lib/audio --shell /usr/sbin/nologin audiod
+install -d -o audiod -g audiod -m 700 /var/lib/audio /var/lib/audio/certs
 
 if [[ ! -f /etc/audio.env ]]; then
     install -m 600 /dev/null /etc/audio.env
@@ -22,7 +23,7 @@ if [[ ! -f /var/lib/audio/certs/cert.pem ]]; then
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
         -subj "/CN=$(hostname)" \
         -keyout /var/lib/audio/certs/key.pem -out /var/lib/audio/certs/cert.pem 2>/dev/null
-    chown audio:audio /var/lib/audio/certs/*.pem
+    chown audiod:audiod /var/lib/audio/certs/*.pem
     chmod 600 /var/lib/audio/certs/key.pem
 fi
 
