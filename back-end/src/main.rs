@@ -91,8 +91,12 @@ async fn main() {
         .nth(1)
         .or_else(|| env::var("ADMIN_EMAIL").ok())
         .map(|raw| Email::parse(&raw).expect("email admin (arg CLI / ADMIN_EMAIL) invalide"));
-    if let Some(email) = &bootstrap_admin_email {
-        println!("[boot] {email} sera admin à sa première connexion");
+    match &bootstrap_admin_email {
+        Some(email) => println!("[boot] {email} sera admin à sa première connexion"),
+        None => println!(
+            "[boot] aucun email admin (argument ou ADMIN_EMAIL) : pas d'invitation admin, \
+             personne ne pourra créer de salon — ex. `cargo run -- moi@exemple.fr`"
+        ),
     }
 
     let art = OxidArt::shared_with_evictor(Duration::from_millis(100), Duration::from_secs(1));
