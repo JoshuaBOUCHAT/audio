@@ -212,6 +212,21 @@ Résultat : **1080p120 fluide** (RTX 3060 Ti, KDE Wayland, Firefox), 30 Mbps CBR
 - Ressenti final (utilisateur) : mouvements fluides, texte tapé propre avec un léger
   jitter (écran à 240 Hz échantillonné à 120 : jusqu'à 8 ms d'écart par lettre).
 
+**Test Windows prévu (pas encore fait)** : même PC (RTX 3060 Ti) démarré sous Windows
+comme diffuseur, serveur sur le portable Linux du même réseau.
+- Portable : cloner `audio` et `radixox` côte à côte (dépendance par chemin relatif ;
+  `audio` avait 89 commits non poussés le 2026-10-14 — pousser d'abord), Rust via
+  rustup, `SPIKE_HTTP_BIND=0.0.0.0 cargo run --release --example video_whip`, ouvrir
+  3000/tcp et 50001/udp dans firewalld. Spectateur : Firefox sur le portable
+  (`http://localhost:3000`) ou sur Windows (`http://<ip du portable>:3000`).
+- Windows : GStreamer 1.28 MSVC (installation « Complete ») ; vérifier
+  `gst-inspect-1.0 whipclientsink` et `nvd3d11h264enc`, puis
+  `back-end/examples/screen_whip_windows.ps1` (écrit, **jamais lancé**) : d'abord
+  `-Measure` puis `-Measure -Encode` (cadence de capture, comme le banc Linux), puis
+  `-Server <ip du portable>`. Points d'incertitude : `d3d11compositor force-live` pour
+  la cadence fixe, noms des propriétés de `nvd3d11h264enc`, et `whipclientsink` avec
+  du H264 déjà encodé (sa régulation de débit ne s'applique pas).
+
 Reste à valider : un spectateur **à distance** (le test était tout en local : même GPU
 pour capturer, encoder et décoder) ; les premières images d'un mouvement brusque sont
 floues (CBR à faible délai : chaque image n'a que sa part du débit — normal, élargir un

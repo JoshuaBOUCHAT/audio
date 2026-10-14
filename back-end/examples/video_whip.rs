@@ -16,7 +16,8 @@
 //     congestion-control=disabled start-bitrate=15000000 video-caps=video/x-h264
 // Un seul diffuseur à la fois (le suivant remplace le précédent), autant de spectateurs
 // qu'on veut. `SPIKE_IP` : adresse annoncée (défaut : l'IP locale, jamais 127.0.0.1),
-// `SPIKE_UDP` : port UDP (défaut 50001), `SPIKE_HTTP` : port HTTP (défaut 3000).
+// `SPIKE_UDP` : port UDP (défaut 50001), `SPIKE_HTTP` : port HTTP (défaut 3000),
+// `SPIKE_HTTP_BIND` : adresse d'écoute HTTP (défaut 127.0.0.1, 0.0.0.0 pour le réseau local).
 
 use std::cell::RefCell;
 use std::net::{IpAddr, SocketAddr};
@@ -91,7 +92,10 @@ async fn main() {
     monoio::spawn(udp_loop(socket, state.clone(), announced));
 
     let http_port: u16 = std::env::var("SPIKE_HTTP").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
-    let listener = TcpListener::bind(("127.0.0.1", http_port)).expect("bind HTTP");
+    // `SPIKE_HTTP_BIND=0.0.0.0` : joignable depuis le réseau local (diffuseur sur une
+    // autre machine) ; par défaut, cette machine seulement.
+    let bind = std::env::var("SPIKE_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let listener = TcpListener::bind((bind.as_str(), http_port)).expect("bind HTTP");
     println!("http://localhost:{http_port} — WHIP : http://127.0.0.1:{http_port}/whip — média sur {announced}/udp");
     let mut next_id = 0;
     loop {
