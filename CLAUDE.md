@@ -40,6 +40,12 @@ https://audio.joshua-bouchat.fr (déploiement : `deploy/`, derrière le nginx du
 prochaines étapes) : `HANDOFF.md` ; points repoussés : `TODO.md` ; tests manuels de
 bout en bout : `tests-e2e/`.
 
+Vidéo (2026-10-14) : **spike seulement**, rien dans le vrai serveur ni dans le proto.
+Diffuseur natif GStreamer → WHIP → SFU str0m → navigateurs, 1080p120 validé en local
+sous Linux (`back-end/examples/video_whip.rs`, `screen_whip.py`, `screen_whip_windows.ps1`
+non testé). Leçons, réglages et plan du test Windows : `HANDOFF.md` § Vidéo. Prochaine
+étape : user stories vidéo, puis intégration.
+
 ## Commandes
 
 ```bash
@@ -192,6 +198,21 @@ STUN/TURN tiers. Le serveur fait de l'**ICE-lite auto-hébergé** — str0m rép
 lui-même aux requêtes STUN binding reçues sur son port UDP média, puisque la seule
 destination qui compte est le serveur lui-même (adresse publique fixe). Cohérent avec
 "un seul binaire, zéro service externe".
+
+**Vidéo — orientation discutée le 2026-10-14 (à formaliser en user stories)** :
+- Deux voies d'envoi : **navigateur** (caméra, partage d'écran courant, qualité
+  normale — capture d'écran Firefox limitée, VP8 plafonné à 60 images/s) et
+  **diffuseur natif** pour les lives de jeu haute cadence (modèle de l'app Discord :
+  capture + encodage GPU natifs, WebRTC pour le transport) — GStreamer embarqué dans la
+  future app Tauri, envoi en **WHIP** (`POST` SDP sur le port HTTP, cohérent avec un
+  seul port). Le SFU fait suivre le H264 tel quel, zéro décodage.
+- **Partage d'écran envoyé seulement à qui clique « Regarder »** (comme « Go Live ») ;
+  caméra envoyée à tout le vocal. Simulcast / qualité par spectateur plus tard.
+- Un live 120 images/s a en pratique 1 à 2 spectateurs (~30 Mbps chacun).
+- Le portage multi-plateforme = un module de capture par plateforme (Linux
+  PipeWire/DMA-BUF, Windows D3D11, macOS) + partie commune (réglages encodeur, cadence
+  fixe, WHIP), avec détection automatique du matériel.
+- P2P pour les appels à deux : proposé à l'abandon (STUN/TURN), **non tranché**.
 
 ## Résilience — v1 assumé simple
 
