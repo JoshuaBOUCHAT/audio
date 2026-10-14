@@ -182,10 +182,17 @@ Résultat : **1080p120 fluide** (RTX 3060 Ti, KDE Wayland, Firefox), 30 Mbps CBR
   110 Mbps) → réglé par nous dans `encoder-setup` : CBR, `p4`, `ultra-low-latency`,
   `zerolatency`, pas d'image clé périodique (seulement sur PLI). Conséquence : sa
   régulation de débit (`gcc`) ne pilote pas cet encodeur — à faire nous-mêmes.
-- **`keepalive-time` de `pipewiresrc` = une période d'image** : KWin n'envoie rien
-  quand l'écran est immobile, et `videorate` ne comble un trou qu'à l'arrivée de l'image
-  suivante — au premier mouvement, une seconde d'images partait d'un coup (retard puis
-  accélération du direct).
+- **Cadence fixe par `glvideomixer`, pas par `keepalive` + `videorate`** : KWin n'envoie
+  rien quand l'écran est immobile ; `videorate` ne comble un trou qu'à l'arrivée de
+  l'image suivante (au premier mouvement, une seconde d'images partait d'un coup :
+  retard puis accélération du direct). Le `keepalive-time` de `pipewiresrc` corrige ça
+  mais renvoie le tampon DMA-BUF de KWin lui-même, que KWin a pu réutiliser (texte tapé
+  qui apparaît, disparaît, réapparaît). `glvideomixer force-live=true` sort 120 images/s
+  à son rythme en répétant **sa copie** (vraie copie forcée : BGRA → NV12 → RGBA ; une
+  conversion vers RGBA seule peut n'être qu'une vue du tampon de KWin).
+- **VBV de l'encodeur ≈ 4 images** (`vbv-buffer-size`) : par défaut ~1 s, l'encodeur
+  thésaurise pendant un écran immobile et dépense tout au mouvement suivant (pics à
+  40 Mbps+ pour 30 demandés).
 - **H264 Constrained Baseline niveau 5.2** côté str0m (`0x42e034`) : l'émetteur
   (`42c033`) et Firefox (`42e01f`) passent (str0m accepte un niveau offert ≤ le sien).
 - **Tampon de réception UDP** du serveur à 4 Mo+ (`SO_RCVBUF`, plafonné par
@@ -199,8 +206,11 @@ Résultat : **1080p120 fluide** (RTX 3060 Ti, KDE Wayland, Firefox), 30 Mbps CBR
 - Banc reproductible : mire plein écran sur DP-1 (`waylandsink fullscreen-output=`),
   **en pause** pour un écran vraiment immobile (une mire qui tourne redessine sans
   cesse, et son bloc de bruit bouge toujours). Firefox `--headless` ne lance pas WebRTC.
-- Débit côté serveur : 8 spectateurs × 30 Mbps ≈ 240 Mbps sortants — le plafond réel
-  dépend du débit montant du serveur (inconnu à ce jour).
+- Débit côté serveur : un live de jeu en 120 images/s aura **1 à 2 spectateurs** en
+  pratique (dit par l'utilisateur), soit 30-60 Mbps sortants ; 8 × 30 Mbps ≈ 240 Mbps
+  reste le pire cas. Débit montant du serveur : inconnu à ce jour.
+- Ressenti final (utilisateur) : mouvements fluides, texte tapé propre avec un léger
+  jitter (écran à 240 Hz échantillonné à 120 : jusqu'à 8 ms d'écart par lettre).
 
 Reste à valider : un spectateur **à distance** (le test était tout en local : même GPU
 pour capturer, encoder et décoder) ; les premières images d'un mouvement brusque sont

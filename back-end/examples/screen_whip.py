@@ -5,10 +5,11 @@
 # Validé le 2026-10-14 : 1080p120 fluide sur RTX 3060 Ti / KDE Wayland (cf. HANDOFF).
 #
 # Usage : python back-end/examples/screen_whip.py [fps] [Mbps]   (défaut : 120, 15)
-#   MEM=dmabuf-cuda   défaut, le seul chemin qui tient 120+ : image restée sur le GPU
-#                     (DMA-BUF), convertie en NV12 par OpenGL, passée à CUDA ;
-#                     variantes de comparaison : dmabuf, dmabuf-q-cuda, dmabuf-dl,
-#                     dmabuf-dl-q, shm (copie GPU → RAM par KWin : 1-9 images/s)
+#   MEM=dmabuf-mix    défaut : image restée sur le GPU (DMA-BUF), copiée par OpenGL,
+#                     cadence fixe par glvideomixer (répète sa copie quand l'écran est
+#                     immobile), passée à CUDA ; variantes de comparaison : dmabuf-cuda
+#                     (keepalive + videorate : texte tapé qui saute), dmabuf, dmabuf-q-cuda,
+#                     dmabuf-dl, dmabuf-dl-q, shm (copie GPU → RAM par KWin : 1-9 images/s)
 #   SINK=whip|measure|encode   diffuser, mesurer la cadence de capture seule, ou
 #                     capture + encodeur sans whipclientsink
 #   ENCODER=nvautogpuh264enc|nvh264enc   (nvh264enc plafonne vers 100 images/s ici)
@@ -30,7 +31,7 @@ from gi.repository import GLib, Gst
 
 FPS = int(sys.argv[1]) if len(sys.argv) > 1 else 120
 MBPS = int(sys.argv[2]) if len(sys.argv) > 2 else 15
-MEM = os.environ.get("MEM", "dmabuf-cuda")
+MEM = os.environ.get("MEM", "dmabuf-mix")
 SINK = os.environ.get("SINK", "whip")
 ENDPOINT = "http://127.0.0.1:3000/whip"
 TOKEN_FILE = os.path.expanduser("~/.cache/audio-screen-token")
@@ -95,7 +96,10 @@ def selected(_results):
 # CBR, faible latence, image clé seulement à la demande (PLI d'un spectateur).
 ENC = os.environ.get(
     "ENC",
-    f"bitrate={MBPS * 1000},rc-mode=cbr,preset=p4,tune=ultra-low-latency,zerolatency=true,gop-size=-1",
+    f"bitrate={MBPS * 1000},rc-mode=cbr,preset=p4,tune=ultra-low-latency,zerolatency=true,gop-size=-1,"
+    # Marge du débit (VBV) de 4 images : par défaut ~1 s, l'encodeur thésaurise pendant un
+    # écran immobile et dépense tout au mouvement suivant (pics à 2× le débit, rafales).
+    f"vbv-buffer-size={MBPS * 1000 * 4 // FPS}",
 )
 
 ENCODER_PROPS = ["preset", "tune", "rc-mode", "bitrate", "max-bitrate", "vbv-buffer-size", "gop-size",
@@ -115,7 +119,9 @@ def encoder_setup(_sink, _peer, _stream, encoder):
             if encoder.find_property(p):
                 v = encoder.get_property(p)
                 values.append(f"{p}={v.value_nick if hasattr(v, 'value_nick') else v}")
+        caps = encoder.get_static_pad("sink").get_current_caps()
         print(f"encodeur {encoder.get_factory().get_name()} : {' '.join(values)}", flush=True)
+        print(f"  entrée : {caps.to_string() if caps else '?'}", flush=True)
         return False
 
     GLib.timeout_add_seconds(1, show)
@@ -136,8 +142,26 @@ def started(results):
     # ne comble un trou qu'à l'arrivée de l'image suivante — après une seconde immobile, il en
     # sortait 120 d'un coup au premier mouvement (avalanche : retard puis rattrapage).
     keepalive = max(1, 1000 // FPS)
+    if MEM == "dmabuf-mix":
+        # Pas de keepalive ici : il renvoie le tampon DMA-BUF de KWin lui-même, que KWin a pu
+        # réutiliser entre-temps (image plus ancienne ou en cours d'écriture : du texte tapé
+        # qui apparaît, disparaît, réapparaît).
+        keepalive = 0
     source = f"pipewiresrc name=src fd={fd} path={node} do-timestamp=true keepalive-time={keepalive}"
-    if MEM == "dmabuf-dl":
+    if MEM == "dmabuf-mix":
+        # glvideomixer, en direct, sort FPS images/s à son propre rythme en répétant SA copie
+        # de la dernière image (glcolorconvert BGRA → RGBA = une copie) : cadence régulière
+        # sans keepalive ni videorate, et le tampon de KWin est rendu aussitôt.
+        w, h = (int(v) for v in props["size"])
+        source += (
+            " ! video/x-raw(memory:DMABuf) ! glupload ! glcolorconvert"
+            " ! video/x-raw(memory:GLMemory),format=NV12 ! glcolorconvert"
+            " ! video/x-raw(memory:GLMemory),format=RGBA ! glvideomixer force-live=true background=black"
+            f" ! video/x-raw(memory:GLMemory),format=RGBA,width={w},height={h},framerate={FPS}/1"
+            " ! glcolorconvert ! video/x-raw(memory:GLMemory),format=NV12 ! cudaupload"
+            " ! queue max-size-buffers=3 max-size-time=0 max-size-bytes=0 leaky=downstream"
+        )
+    elif MEM == "dmabuf-dl":
         # Variante : NV12 converti sur le GPU puis rapatrié en RAM, NVENC le recopie.
         source += " ! video/x-raw(memory:DMABuf) ! glupload ! glcolorconvert ! video/x-raw(memory:GLMemory),format=NV12 ! gldownload"
     elif MEM == "dmabuf-q-cuda":
@@ -160,9 +184,11 @@ def started(results):
         enc = " ".join(ENC.split(","))
         sink = f"{os.environ.get('ENCODER', 'nvautogpuh264enc')} bitrate={MBPS * 1000} {enc} ! fakesink sync=false"
     else:
-        # videorate : cadence constante pour l'encodeur (son budget par image en dépend).
+        # videorate : cadence constante pour l'encodeur (son budget par image en dépend) ;
+        # inutile derrière glvideomixer, qui la donne déjà.
+        rate = "" if MEM == "dmabuf-mix" else f"videorate ! video/x-raw(ANY),framerate={FPS}/1 ! "
         sink = (
-            f"videorate ! video/x-raw(ANY),framerate={FPS}/1 ! "
+            f"{rate}"
             f"whipclientsink name=whip signaller::whip-endpoint={ENDPOINT} stun-server=\"\" "
             f"congestion-control=disabled start-bitrate={MBPS * 1_000_000} max-bitrate={MBPS * 1_000_000} "
             f"video-caps=video/x-h264"
